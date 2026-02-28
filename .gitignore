@@ -1,0 +1,30 @@
+# Environment — contains GCP project ID and credentials
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Runtime data — enrichments.json is the live state (changes during demo).
+# enrichments.baseline.json IS committed — it's the clean demo starting point.
+data/enrichments.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
