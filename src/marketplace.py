@@ -1,6 +1,5 @@
 """
 Marketplace core logic:
-- EnrichmentStore: persists governance metadata (owner team, compliance, status)
 - aggregate_agents / aggregate_tools: merges live server data with enrichments
 - find_similar: keyword-based duplication detection
 """
@@ -11,6 +10,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from src.sqlite_store import sqlite_store
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +72,18 @@ def aggregate_agents(raw_agents: list[dict]) -> list[dict]:
     Merge raw A2A agent records with marketplace enrichment metadata.
     Returns unified agent objects ready for the UI.
     """
-    enrichments = enrichment_store.all()
+    enrichments = sqlite_store.all()
     result = []
     for agent in raw_agents:
         agent_id = agent.get("agent_id", "")
         enrichment = enrichments.get(agent_id, _default_enrichment(agent_id, "agent"))
+        
+        # Prefer enrichment data, fall back to A2A data
+        source_repo = enrichment.get("source_repo", "") or agent.get("source_repo", "")
+        owner_team = enrichment.get("owner_team", "Unassigned")
+        if owner_team == "Unassigned" and agent.get("owner_team"):
+            owner_team = agent.get("owner_team")
+        
         result.append({
             "id": agent_id,
             "name": _prettify(agent_id),
@@ -85,13 +92,13 @@ def aggregate_agents(raw_agents: list[dict]) -> list[dict]:
             "capabilities": agent.get("capabilities", []),
             "endpoint": agent.get("endpoint", ""),
             "did": agent.get("did", ""),            # DID from A2A registry
-            "owner_team": enrichment.get("owner_team", "Unassigned"),
+            "owner_team": owner_team,
             "compliance": enrichment.get("compliance", []),
             "docs_url": enrichment.get("docs_url", ""),
-            "source_repo": enrichment.get("source_repo", ""),
+            "source_repo": source_repo,
             "status": enrichment.get("status", "active"),
             "registered_at": enrichment.get("registered_at", agent.get("registered_at", "")),
-            "description": enrichment.get("description", ""),
+            "description": enrichment.get("description", agent.get("description", "")),
             "ai_review": enrichment.get("ai_review", None),
             "ai_reviewed_at": enrichment.get("ai_reviewed_at", ""),
         })
@@ -103,7 +110,7 @@ def aggregate_tools(raw_tools: list[dict]) -> list[dict]:
     Merge raw MCP tool records with marketplace enrichment metadata.
     Returns unified tool objects ready for the UI.
     """
-    enrichments = enrichment_store.all()
+    enrichments = sqlite_store.all()
     result = []
     for tool in raw_tools:
         tool_id = tool.get("name", "")

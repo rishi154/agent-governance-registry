@@ -9,9 +9,10 @@ import logging
 import shutil
 import httpx
 import uvicorn
+import asyncio
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, field_validator
 from typing import Optional
@@ -33,9 +34,11 @@ except ImportError:
 
 from src.clients import MCPClient, A2AClient
 from src.marketplace import (
-    enrichment_store, aggregate_agents, aggregate_tools,
+    aggregate_agents, aggregate_tools,
     find_similar, COMPLIANCE_OPTIONS
 )
+from src.sqlite_store import sqlite_store
+from src.auth import verify_api_key, require_permission, optional_auth, ALLOW_UNAUTHENTICATED_READ
 
 from src.governance_agent import governance_agent  # must be after load_dotenv()
 
@@ -99,12 +102,13 @@ class RegisterToolRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stats")
-async def get_stats():
+async def get_stats(auth: tuple = Depends(optional_auth)):
+    role, actor = auth
     agents = aggregate_agents(await a2a.get_agents())
     tools = aggregate_tools(await _get_all_tools())
     all_items = agents + tools
     teams = {i["owner_team"] for i in all_items if i["owner_team"] != "Unassigned"}
-    active = sum(1 for i in all_items if i.get("status") == "active")
+    active = sum(1 for i in all_items if i.get("status") in ["active", "approved"])
     health_pct = round((active / len(all_items) * 100) if all_items else 0)
     return {
         "total_agents": len(agents),
@@ -160,13 +164,18 @@ async def demo_reset():
 
 
 @app.get("/api/agents")
-async def get_agents():
+async def get_agents(auth: tuple = Depends(optional_auth)):
+    role, actor = auth
     raw = await a2a.get_agents()
-    return aggregate_agents(raw)
+    agents = aggregate_agents(raw)
+    
+    # Show all agents regardless of status (for demo)
+    return agents
 
 
 @app.get("/api/tools")
-async def get_tools():
+async def get_tools(auth: tuple = Depends(optional_auth)):
+    role, actor = auth
     raw = await _get_all_tools()
     return aggregate_tools(raw)
 
@@ -202,7 +211,12 @@ async def similarity(name: str = "", description: str = ""):
 
 
 @app.post("/api/register/agent")
-async def register_agent(req: RegisterAgentRequest):
+async def register_agent(req: RegisterAgentRequest, auth: tuple = Depends(require_permission("can_register"))):
+    role, actor = auth
+    
+    # Check if agent already has enrichment (from auto-detection or previous registration)
+    existing_enrichment = sqlite_store.get(req.agent_id)
+    
     payload = {
         "agent_id": req.agent_id,
         "agent_type": req.agent_type,
@@ -223,47 +237,67 @@ async def register_agent(req: RegisterAgentRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"A2A server error: {e}")
 
-    enrichment_store.save(req.agent_id, {
+    # Merge with existing enrichment to preserve auto-detected governance review
+    new_enrichment = {
         "owner_team": req.owner_team,
         "compliance": req.compliance,
         "docs_url": req.docs_url,
         "source_repo": req.source_repo,
-        "status": "active",
+        "status": "pending_review",  # Always pending until approved
         "item_type": "agent",
         "description": req.description,
-        "registered_at": datetime.utcnow().strftime("%Y-%m-%d"),
-    })
+        "registered_at": existing_enrichment.get("registered_at") if existing_enrichment else datetime.utcnow().strftime("%Y-%m-%d"),
+        "discovery_method": "marketplace",  # Mark as marketplace registration
+    }
+    
+    # Preserve existing AI review if present (don't overwrite auto-detected review)
+    if existing_enrichment and existing_enrichment.get("ai_review"):
+        logger.info(f"Preserving existing AI review for {req.agent_id}")
+        new_enrichment["ai_review"] = existing_enrichment["ai_review"]
+        new_enrichment["ai_reviewed_at"] = existing_enrichment["ai_reviewed_at"]
+    
+    sqlite_store.save(req.agent_id, new_enrichment)
+    sqlite_store.log_action(req.agent_id, "registered", actor, {"method": "marketplace"})
 
-    # Run AI governance review
-    review = None
-    try:
-        catalog = aggregate_agents(await a2a.get_agents()) + aggregate_tools(await _get_all_tools())
-        source_code = await governance_agent.fetch_source_code(req.source_repo)
-        review = await governance_agent.review(
-            item_id=req.agent_id,
-            item_type="agent",
-            payload=req.model_dump(),
-            existing_catalog=catalog,
-            source_code=source_code,
-        )
-        if review:
-            enrichment_store.save(req.agent_id, {
-                "ai_review": review,
-                "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
-            })
-    except Exception as e:
-        logger.warning(f"Governance review failed for {req.agent_id}: {e}")
+    # Run AI governance review (only if not already reviewed)
+    review = new_enrichment.get("ai_review")  # Use existing review if present
+    if not review:
+        try:
+            catalog = aggregate_agents(await a2a.get_agents()) + aggregate_tools(await _get_all_tools())
+            source_code = await governance_agent.fetch_source_code(req.source_repo)
+            review = await governance_agent.review(
+                item_id=req.agent_id,
+                item_type="agent",
+                payload=req.model_dump(),
+                existing_catalog=catalog,
+                source_code=source_code,
+            )
+            if review:
+                has_issues = review.get("requires_human_review") or (review.get("risk_flags") and len(review.get("risk_flags")) > 0)
+                new_status = "under_review" if has_issues else "pending_review"
+                sqlite_store.save(req.agent_id, {
+                    "ai_review": review,
+                    "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
+                    "status": new_status,
+                })
+                sqlite_store.log_action(req.agent_id, "ai_review_completed", "system", {"confidence": review.get("confidence")})
+        except Exception as e:
+            logger.warning(f"Governance review failed for {req.agent_id}: {e}")
 
     return {
-        "status": "updated" if already_existed else "registered",
+        "status": "updated" if already_existed or existing_enrichment else "registered",
         "agent_id": req.agent_id,
         "ai_review": review,
+        "note": "Preserved existing governance review" if existing_enrichment and existing_enrichment.get("ai_review") else None,
+        "approval_required": True,
     }
 
 
 @app.post("/api/register/tool")
-async def register_tool(req: RegisterToolRequest):
-    enrichment_store.save(req.tool_id, {
+async def register_tool(req: RegisterToolRequest, auth: tuple = Depends(require_permission("can_register"))):
+    role, actor = auth
+    
+    sqlite_store.save(req.tool_id, {
         "owner_team": req.owner_team,
         "compliance": req.compliance,
         "docs_url": req.docs_url,
@@ -274,11 +308,12 @@ async def register_tool(req: RegisterToolRequest):
         "example_request": req.example_request,
         "auth_required": req.auth_required,
         "auth_type": req.auth_type,
-        "status": "active",
+        "status": "pending_review",
         "item_type": "tool",
         "description": req.description,
         "registered_at": datetime.utcnow().strftime("%Y-%m-%d"),
     })
+    sqlite_store.log_action(req.tool_id, "registered", actor, {"method": "marketplace"})
 
     # Run AI governance review
     review = None
@@ -293,15 +328,90 @@ async def register_tool(req: RegisterToolRequest):
             source_code=source_code,
         )
         if review:
-            enrichment_store.save(req.tool_id, {
+            has_issues = review.get("requires_human_review") or (review.get("risk_flags") and len(review.get("risk_flags")) > 0)
+            new_status = "under_review" if has_issues else "pending_review"
+            sqlite_store.save(req.tool_id, {
                 "ai_review": review,
                 "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
+                "status": new_status,
             })
+            sqlite_store.log_action(req.tool_id, "ai_review_completed", "system", {"confidence": review.get("confidence")})
     except Exception as e:
         logger.warning(f"Governance review failed for {req.tool_id}: {e}")
 
-    return {"status": "registered", "tool_id": req.tool_id, "ai_review": review}
+    return {"status": "registered", "tool_id": req.tool_id, "ai_review": review, "approval_required": True}
 
+
+@app.get("/api/agent/{agent_id}/tools")
+async def get_agent_tools(agent_id: str, auth: tuple = Depends(optional_auth)):
+    """Return all tools that belong to a specific agent."""
+    role, actor = auth
+    all_tools = aggregate_tools(await _get_all_tools())
+    return [t for t in all_tools if t.get("source_agent") == agent_id]
+
+
+# ---------------------------------------------------------------------------
+# Approval Workflow
+# ---------------------------------------------------------------------------
+
+class ApprovalRequest(BaseModel):
+    decision: str  # "approve" or "reject"
+    notes: str = ""
+
+@app.get("/api/review-queue")
+async def get_review_queue(auth: tuple = Depends(require_permission("can_approve"))):
+    """Get all agents/tools pending review (admin only)."""
+    role, actor = auth
+    
+    agents = aggregate_agents(await a2a.get_agents())
+    tools = aggregate_tools(await _get_all_tools())
+    all_items = agents + tools
+    
+    # Filter to pending/under review
+    pending = [i for i in all_items if i.get("status") in ["pending_review", "under_review"]]
+    
+    return {
+        "count": len(pending),
+        "items": pending
+    }
+
+@app.post("/api/agents/{agent_id}/approve")
+async def approve_agent(agent_id: str, req: ApprovalRequest, auth: tuple = Depends(require_permission("can_approve"))):
+    """Approve or reject an agent (admin only)."""
+    role, actor = auth
+    
+    if req.decision not in ["approve", "reject"]:
+        raise HTTPException(status_code=400, detail="Decision must be 'approve' or 'reject'")
+    
+    # Check agent exists
+    agent = sqlite_store.get(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    
+    # Update status
+    new_status = "approved" if req.decision == "approve" else "rejected"
+    sqlite_store.update_status(agent_id, new_status, actor)
+    sqlite_store.log_action(agent_id, f"agent_{req.decision}d", actor, {"notes": req.notes})
+    
+    logger.info(f"Agent {agent_id} {req.decision}d by {actor}")
+    
+    return {
+        "status": "success",
+        "agent_id": agent_id,
+        "decision": req.decision,
+        "new_status": new_status
+    }
+
+@app.get("/api/agents/{agent_id}/audit")
+async def get_agent_audit(agent_id: str, auth: tuple = Depends(require_permission("can_approve"))):
+    """Get audit log for an agent (admin only)."""
+    role, actor = auth
+    return sqlite_store.get_audit_log(agent_id=agent_id)
+
+
+# ---------------------------------------------------------------------------
+# Existing endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/api/agent/{agent_id}/tools")
 async def get_agent_tools(agent_id: str):
@@ -371,7 +481,7 @@ async def _get_all_tools() -> list[dict]:
     live_tools = await mcp.get_tools()
     live_ids = {t.get("name", "") for t in live_tools}
 
-    enrichments = enrichment_store.all()
+    enrichments = sqlite_store.all()
     enrichment_tools = []
     for eid, enr in enrichments.items():
         if enr.get("item_type") == "tool" and eid not in live_ids:
@@ -952,6 +1062,25 @@ async function openDetail(itemId) {
           <span class="text-xs font-medium px-2 py-0.5 rounded ${isAgent?'bg-indigo-100 text-indigo-700':'bg-sky-100 text-sky-700'}">${isAgent ? 'Agent' : 'Tool'}</span>
         </div>
       </div>
+      ${item.status === 'under_review' ? `
+      <div class="mt-3 flex gap-2">
+        <button onclick="approveAgent('${item.id}')" class="flex-1 bg-green-600 text-white text-xs font-semibold py-2 rounded-lg hover:bg-green-700 transition">
+          ✓ Approve
+        </button>
+        <button onclick="rejectAgent('${item.id}')" class="flex-1 bg-red-600 text-white text-xs font-semibold py-2 rounded-lg hover:bg-red-700 transition">
+          ✗ Reject
+        </button>
+      </div>` : ''}
+      ${item.status === 'pending_review' && item.ai_review ? `
+      <div class="mt-3">
+        <button onclick="approveAgent('${item.id}')" class="w-full bg-green-600 text-white text-xs font-semibold py-2 rounded-lg hover:bg-green-700 transition">
+          ✓ Approve (Review Complete)
+        </button>
+      </div>` : ''}
+      ${item.status === 'pending_review' && !item.ai_review ? `
+      <div class="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
+        ⏳ AI governance review in progress... Check back in a few moments.
+      </div>` : ''}
     </div>
     <dl class="space-y-4 text-sm">
       <div><dt class="text-xs font-semibold text-gray-500 uppercase">Description</dt>
@@ -1446,6 +1575,34 @@ async function submitRegister(e) {
 // (seed modal removed — use scripts/demo_start.py to reset demo state)
 
 // ============================================================
+// APPROVAL ACTIONS
+// ============================================================
+async function approveAgent(agentId) {
+  if (!confirm(`Approve ${agentId}?`)) return;
+  try {
+    await api(`/api/agents/${agentId}/approve`, 'POST', { decision: 'approve', notes: 'Approved via UI' });
+    alert('Agent approved!');
+    closeDetail();
+    loadAll();
+  } catch(e) {
+    alert('Failed to approve: ' + e.message);
+  }
+}
+
+async function rejectAgent(agentId) {
+  const notes = prompt(`Reject ${agentId}? Enter reason:`);
+  if (!notes) return;
+  try {
+    await api(`/api/agents/${agentId}/approve`, 'POST', { decision: 'reject', notes });
+    alert('Agent rejected!');
+    closeDetail();
+    loadAll();
+  } catch(e) {
+    alert('Failed to reject: ' + e.message);
+  }
+}
+
+// ============================================================
 // API HELPER
 // ============================================================
 async function api(url, method='GET', body=null) {
@@ -1463,6 +1620,119 @@ async function api(url, method='GET', body=null) {
 @app.get("/", response_class=HTMLResponse)
 async def ui():
     return HTMLResponse(content=HTML)
+
+
+# ---------------------------------------------------------------------------
+# Background governance scanner
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def start_governance_scanner():
+    """Start background task to scan for unreviewed agents."""
+    asyncio.create_task(governance_scan_loop())
+
+async def governance_scan_loop():
+    """Continuously scan A2A registry for agents without governance review."""
+    await asyncio.sleep(10)  # Wait 10s on startup
+    while True:
+        try:
+            await scan_and_review_agents()
+        except Exception as e:
+            logger.error(f"Governance scan failed: {e}")
+        await asyncio.sleep(60)  # Scan every 60 seconds
+
+async def scan_and_review_agents():
+    """Detect agents in A2A registry without governance review and trigger review."""
+    raw_agents = await a2a.get_agents()
+    enrichments = sqlite_store.all()
+    
+    for agent in raw_agents:
+        agent_id = agent.get("agent_id")
+        if not agent_id:
+            continue
+            
+        enr = enrichments.get(agent_id, {})
+        
+        # Create enrichment for newly detected agents
+        if not enr:
+            logger.warning(f"⚠️  Auto-detected agent bypassed marketplace: {agent_id}")
+            sqlite_store.save(agent_id, {
+                "owner_team": agent.get("owner_team", "Unassigned"),
+                "source_repo": agent.get("source_repo", ""),
+                "description": agent.get("description", "Auto-detected agent (registered directly with A2A server)"),
+                "status": "pending_review",
+                "item_type": "agent",
+                "registered_at": datetime.utcnow().strftime("%Y-%m-%d"),
+                "discovery_method": "auto_detected",
+                "compliance": [],
+            })
+            sqlite_store.log_action(agent_id, "auto_detected", "system", {"source": "a2a_registry"})
+            enr = sqlite_store.get(agent_id)
+        
+        # Trigger governance review if missing
+        if not enr.get("ai_review"):
+            logger.info(f"Running governance review for {agent_id}...")
+            
+            source_repo = enr.get("source_repo", "")
+            if not source_repo:
+                # No source repo - create warning review
+                sqlite_store.save(agent_id, {
+                    "ai_review": {
+                        "summary": "⚠️ Agent registered without source repository. Cannot perform code-based governance review.",
+                        "requires_human_review": True,
+                        "risk_flags": [
+                            "No source repository provided",
+                            "Bypassed marketplace registration process",
+                            "Cannot validate compliance claims"
+                        ],
+                        "unverified_claims": [],
+                        "detected_compliance": [],
+                        "recommendations": [
+                            "Re-register through marketplace with source_repo URL",
+                            "Provide documentation for manual review"
+                        ],
+                        "confidence": "high",
+                        "pci_scope": "unknown",
+                        "pii_scope": "unknown",
+                        "duplicate_risk": "unknown",
+                        "auth_assessment": "Cannot assess without source code"
+                    },
+                    "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
+                    "status": "under_review",
+                })
+                sqlite_store.log_action(agent_id, "warning_review_created", "system", {"reason": "no_source_repo"})
+                continue
+            
+            # Run full governance review
+            try:
+                catalog = aggregate_agents(raw_agents) + aggregate_tools(await _get_all_tools())
+                source_code = await governance_agent.fetch_source_code(source_repo)
+                review = await governance_agent.review(
+                    item_id=agent_id,
+                    item_type="agent",
+                    payload={
+                        "agent_id": agent_id,
+                        "capabilities": agent.get("capabilities", []),
+                        "owner_team": enr.get("owner_team", "Unknown"),
+                        "source_repo": source_repo,
+                        "description": enr.get("description", ""),
+                        "endpoint": agent.get("endpoint", ""),
+                        "compliance": enr.get("compliance", []),
+                    },
+                    existing_catalog=catalog,
+                    source_code=source_code,
+                )
+                if review:
+                    has_issues = review.get("requires_human_review") or (review.get("risk_flags") and len(review.get("risk_flags")) > 0)
+                    sqlite_store.save(agent_id, {
+                        "ai_review": review,
+                        "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
+                        "status": "under_review" if has_issues else "pending_review",
+                    })
+                    sqlite_store.log_action(agent_id, "ai_review_completed", "system", {"confidence": review.get("confidence")})
+                    logger.info(f"✓ Governance review completed for {agent_id}")
+            except Exception as e:
+                logger.error(f"Governance review failed for {agent_id}: {e}")
 
 
 # ---------------------------------------------------------------------------

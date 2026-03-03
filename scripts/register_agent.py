@@ -19,6 +19,7 @@ Requirements:
 
 import sys
 import json
+import os
 import argparse
 import textwrap
 from pathlib import Path
@@ -294,7 +295,7 @@ def print_review(label, response_json):
 # Registration calls
 # ---------------------------------------------------------------------------
 
-def register_agent(base_url: str, label: str, payload: dict) -> dict | None:
+def register_agent(base_url: str, label: str, payload: dict, api_key: str = None) -> dict | None:
     _header(f"AGENT: {label}")
     print(f"\n  {_color('Payload summary', DIM)}")
     print(f"    agent_id   : {payload['agent_id']}")
@@ -305,10 +306,15 @@ def register_agent(base_url: str, label: str, payload: dict) -> dict | None:
     print(f"\n  {_color('Calling POST /api/register/agent ...', DIM)}")
     print(f"  {_color('(AI governance review may take 10-30s)', DIM)}")
 
+    headers = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+
     try:
         resp = httpx.post(
             f"{base_url}/api/register/agent",
             json=payload,
+            headers=headers,
             timeout=90.0,
         )
         resp.raise_for_status()
@@ -327,7 +333,7 @@ def register_agent(base_url: str, label: str, payload: dict) -> dict | None:
         return None
 
 
-def register_tool(base_url: str, label: str, payload: dict) -> dict | None:
+def register_tool(base_url: str, label: str, payload: dict, api_key: str = None) -> dict | None:
     _header(f"TOOL: {label}")
     print(f"\n  {_color('Payload summary', DIM)}")
     print(f"    tool_id    : {payload['tool_id']}")
@@ -337,10 +343,15 @@ def register_tool(base_url: str, label: str, payload: dict) -> dict | None:
     print(f"\n  {_color('Calling POST /api/register/tool ...', DIM)}")
     print(f"  {_color('(AI governance review may take 10-30s)', DIM)}")
 
+    headers = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+
     try:
         resp = httpx.post(
             f"{base_url}/api/register/tool",
             json=payload,
+            headers=headers,
             timeout=90.0,
         )
         resp.raise_for_status()
@@ -404,9 +415,17 @@ def main():
     parser.add_argument("--json",       action="store_true", help="Print raw JSON responses instead of formatted output")
     args = parser.parse_args()
 
+    # Get API key from environment
+    api_key = os.getenv("MARKETPLACE_DEV_KEY") or os.getenv("MARKETPLACE_ADMIN_KEY")
+    if not api_key:
+        print(f"\n{_color('WARNING: No API key found in environment', YELLOW)}")
+        print(f"  Set MARKETPLACE_DEV_KEY or MARKETPLACE_ADMIN_KEY in .env file")
+        print(f"  Or ensure ALLOW_UNAUTHENTICATED_READ=true for registration\n")
+
     print(f"\n{_color('Agent Marketplace — Registration & Governance Review Script', BOLD)}")
     print(f"{_color('=' * 70, DIM)}")
     print(f"  Target : {args.url}")
+    print(f"  API Key: {'✓ Found' if api_key else '✗ Not set'}")
     print(f"  Payloads: {len(AGENT_PAYLOADS)} agents, {len(TOOL_PAYLOADS)} tools")
 
     # Pre-flight: check governance agent before starting registrations
@@ -422,7 +441,7 @@ def main():
         print(f"\n{_color('━' * 70, BOLD)}")
         print(_color("  AGENT REGISTRATIONS", BOLD))
         for label, payload in AGENT_PAYLOADS:
-            result = register_agent(args.url, label, payload)
+            result = register_agent(args.url, label, payload, api_key)
             if args.json and result:
                 print(f"\n  {_color('Raw JSON:', DIM)}")
                 print(json.dumps(result, indent=2))
@@ -432,7 +451,7 @@ def main():
         print(f"\n{_color('━' * 70, BOLD)}")
         print(_color("  TOOL REGISTRATIONS", BOLD))
         for label, payload in TOOL_PAYLOADS:
-            result = register_tool(args.url, label, payload)
+            result = register_tool(args.url, label, payload, api_key)
             if args.json and result:
                 print(f"\n  {_color('Raw JSON:', DIM)}")
                 print(json.dumps(result, indent=2))
