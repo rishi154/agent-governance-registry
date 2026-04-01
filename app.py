@@ -959,7 +959,11 @@ function cardHTML(item) {
   const isAgent = item.item_type === 'agent';
   const isBlocked = ['pending_review','under_review','rejected'].includes(item.status);
   const statusColor = { active: 'dot-active', approved: 'dot-active', deprecated: 'dot-deprecated', 'under-review': 'dot-review', 'under_review': 'dot-review', 'pending_review': 'dot-review', rejected: 'dot-deprecated' }[item.status] || 'dot-active';
-  const badges = (item.compliance || []).map(c => `<span class="text-xs px-1.5 py-0.5 rounded font-medium ${badgeClass(c)}">${c}</span>`).join('');
+  const unverified = new Set((item.ai_review || {}).unverified_claims || []);
+  const badges = (item.compliance || []).map(c => {
+    if (unverified.has(c)) return `<span class="text-xs px-1.5 py-0.5 rounded font-medium bg-red-50 text-red-600 line-through" title="Unverified claim">⚠ ${c}</span>`;
+    return `<span class="text-xs px-1.5 py-0.5 rounded font-medium ${badgeClass(c)}">${c}</span>`;
+  }).join('');
   const authBadge = item.auth_required
     ? `<span class="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-50 text-orange-700">🔐 Auth</span>`
     : '';
@@ -1277,7 +1281,11 @@ async function openDetail(itemId) {
     : `<div class="mt-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800 font-semibold">
         ✓ APPROVED — This ${isAgent ? 'agent' : 'tool'} is allowed to receive traffic.
       </div>`;
-  const badges = (item.compliance || []).map(c => `<span class="text-xs px-2 py-1 rounded font-medium ${badgeClass(c)}">${c}</span>`).join('');
+  const detailUnverified = new Set((item.ai_review || {}).unverified_claims || []);
+  const badges = (item.compliance || []).map(c => {
+    if (detailUnverified.has(c)) return `<span class="text-xs px-2 py-1 rounded font-medium bg-red-50 text-red-600 line-through" title="Unverified claim">⚠ ${c}</span>`;
+    return `<span class="text-xs px-2 py-1 rounded font-medium ${badgeClass(c)}">${c}</span>`;
+  }).join('');
   const caps = isAgent && item.capabilities?.length
     ? `<div class="mt-1 flex flex-wrap gap-1">${item.capabilities.map(c=>`<span class="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded">${c.replace(/_/g,' ')}</span>`).join('')}</div>`
     : '<p class="text-sm text-gray-400 mt-1">None specified</p>';
