@@ -1043,10 +1043,12 @@ function aiReviewHTML(review) {
       </ul>
     </div>` : '';
 
-  const detectedHTML = (review.detected_compliance && review.detected_compliance.length) ? `
+  const unverifiedSet = new Set(review.unverified_claims || []);
+  const verifiedCompliance = (review.detected_compliance || []).filter(d => !unverifiedSet.has(d));
+  const detectedHTML = verifiedCompliance.length ? `
     <div class="mt-2">
-      <p class="text-xs font-semibold text-green-700 mb-1">✅ AI-Detected Compliance</p>
-      <div class="flex flex-wrap gap-1">${review.detected_compliance.map(d =>
+      <p class="text-xs font-semibold text-green-700 mb-1">✅ AI-Verified Compliance</p>
+      <div class="flex flex-wrap gap-1">${verifiedCompliance.map(d =>
         `<span class="text-xs px-1.5 py-0.5 bg-green-50 text-green-700 rounded border border-green-200">${d}</span>`).join('')}
       </div>
     </div>` : '';
