@@ -1,0 +1,380 @@
+# ============================================================================
+# Framework-Aware Governance Patterns
+# ============================================================================
+# This file teaches the AI governance reviewer what to look for in agents
+# built with specific frameworks. Each framework hides governance-critical
+# behavior in different places (config files, decorators, YAML, etc.).
+#
+# HOW TO UPDATE:
+#   1. Add a new entry under `frameworks:` following the existing format
+#   2. Restart the marketplace — patterns are loaded at startup
+#   3. No Python code changes required
+#
+# HOW IT WORKS:
+#   - `detect` patterns are shown to the LLM so it can identify the framework
+#   - `risks` are injected into the governance system prompt
+#   - `config_files` are prioritized by the source code fetcher
+#   - `priority_files` are added to the always-fetch list
+# ============================================================================
+
+frameworks:
+
+  langchain:
+    name: "LangChain / LangChain Community"
+    detect:
+      - "from langchain"
+      - "from langchain_core"
+      - "from langchain_community"
+      - "from langchain_openai"
+    config_files:
+      - "chains.py"
+      - "chain.py"
+      - "tools.py"
+      - "prompts.py"
+      - "prompt.py"
+    risks:
+      - severity: critical
+        pattern: "ShellTool, SQLDatabaseTool, PythonREPLTool, RequestsTool"
+        description: "These give the LLM shell access, SQL access, or arbitrary code execution."
+        checks: [6, 15]
+      - severity: high
+        pattern: "AgentType.ZERO_SHOT_REACT_DESCRIPTION, create_react_agent"
+        description: "LLM decides which tools to call. If any tool is dangerous, the agent is dangerous."
+        checks: [16, 18]
+      - severity: high
+        pattern: "ConversationBufferMemory"
+        description: "Stores full conversation history — PII accumulation risk."
+        checks: [7, 23]
+      - severity: medium
+        pattern: "ConversationSummaryMemory"
+        description: "Sends conversation to LLM for summarization — data sent to provider."
+        checks: [23]
+      - severity: medium
+        pattern: "RunnablePassthrough"
+        description: "Passes input directly to LLM with no transformation — prompt injection risk."
+        checks: [15]
+      - severity: medium
+        pattern: "verbose=True on LLMChain"
+        description: "Logs full prompts to stdout — PII/PCI exposure."
+        checks: [7]
+      - severity: low
+        pattern: "PydanticOutputParser"
+        description: "Good — structured output validation. Absence means raw LLM text passed through."
+        checks: [9]
+
+  crewai:
+    name: "CrewAI"
+    detect:
+      - "from crewai"
+      - "crew.yaml"
+      - "agents.yaml"
+      - "tasks.yaml"
+    config_files:
+      - "crew.yaml"
+      - "agents.yaml"
+      - "tasks.yaml"
+      - "crew.py"
+    priority_files:
+      - "crew.yaml"
+      - "agents.yaml"
+      - "tasks.yaml"
+    risks:
+      - severity: critical
+        pattern: "allow_delegation=True"
+        description: >
+          Agents can autonomously hand off tasks to other agents — creates
+          unbounded agent chaining with NO cycle detection.
+        checks: [10, 16]
+      - severity: high
+        pattern: "crew.yaml / agents.yaml config"
+        description: >
+          The REAL agent config lives in YAML, not Python. Look for: role, goal,
+          backstory (defines what agent can do), tools (list of tools), and
+          allow_delegation (autonomous delegation flag).
+        checks: [16, 17]
+      - severity: high
+        pattern: "process: hierarchical"
+        description: >
+          A manager agent delegates to worker agents autonomously.
+          Flag for human-in-the-loop check.
+        checks: [16]
+      - severity: medium
+        pattern: "tasks.yaml with PII/PCI in task templates"
+        description: "Task descriptions and expected outputs may contain sensitive data patterns."
+        checks: [7, 23]
+      - severity: medium
+        pattern: "memory=True"
+        description: "Enables long-term memory — data retention implications."
+        checks: [7]
+
+  autogen:
+    name: "AutoGen / AG2"
+    detect:
+      - "from autogen"
+      - "from ag2"
+      - "import autogen"
+      - "OAI_CONFIG_LIST"
+      - "AssistantAgent"
+      - "UserProxyAgent"
+    config_files:
+      - "oai_config_list"
+      - "oai_config_list.json"
+    priority_files:
+      - "OAI_CONFIG_LIST"
+      - "OAI_CONFIG_LIST.json"
+    risks:
+      - severity: critical
+        pattern: "code_execution_config"
+        description: >
+          Agent can execute ARBITRARY CODE on the host machine.
+          use_docker=False means code runs directly on host, not sandboxed.
+          use_docker=True is slightly safer but still risky.
+        checks: [9, 15, 16]
+      - severity: critical
+        pattern: 'human_input_mode="NEVER"'
+        description: >
+          Agent runs fully autonomously with no human oversight.
+          Combined with code execution = autonomous code execution.
+        checks: [16]
+      - severity: high
+        pattern: 'human_input_mode="TERMINATE"'
+        description: "Only asks human at the end — may have already taken irreversible actions."
+        checks: [16]
+      - severity: high
+        pattern: "max_consecutive_auto_reply (high or None)"
+        description: "Controls autonomous turns. High values or None = unbounded agent loops."
+        checks: [10]
+      - severity: high
+        pattern: "GroupChat with high max_round"
+        description: "max_round=100 or higher = effectively unbounded multi-agent loops."
+        checks: [10]
+      - severity: high
+        pattern: "OAI_CONFIG_LIST file"
+        description: "Often contains API keys in a JSON file. Check if it's in .gitignore."
+        checks: [6, 12]
+      - severity: medium
+        pattern: "llm_config with hardcoded secrets"
+        description: "Contains model name, temperature, API keys — check for hardcoded secrets."
+        checks: [6]
+      - severity: medium
+        pattern: "Missing is_termination_msg"
+        description: "If missing, conversations may never terminate."
+        checks: [10]
+
+  semantic_kernel:
+    name: "Semantic Kernel (Microsoft)"
+    detect:
+      - "import semantic_kernel"
+      - "from semantic_kernel"
+      - "kernel.add_plugin"
+      - "KernelFunction"
+    config_files:
+      - "plugins.py"
+      - "kernel_config.py"
+    risks:
+      - severity: high
+        pattern: "kernel.add_plugin()"
+        description: "Plugin capabilities define the agent's attack surface. Check what each plugin can do."
+        checks: [15, 16]
+      - severity: high
+        pattern: "FunctionChoiceBehavior.Auto()"
+        description: "LLM decides which functions to call. If any plugin is dangerous, the agent is dangerous."
+        checks: [16, 18]
+      - severity: high
+        pattern: "SequentialPlanner, StepwisePlanner"
+        description: "LLM creates multi-step plans and executes them. Autonomous multi-step execution."
+        checks: [16]
+      - severity: medium
+        pattern: "AzureChatCompletion, OpenAIChatCompletion connectors"
+        description: "Check for hardcoded keys in connector config."
+        checks: [6, 12]
+      - severity: medium
+        pattern: "{{$input}} template syntax"
+        description: "Check for unsanitized user input in prompt templates."
+        checks: [15]
+
+  llamaindex:
+    name: "LlamaIndex"
+    detect:
+      - "from llama_index"
+      - "from llama_index.core"
+      - "VectorStoreIndex"
+      - "ServiceContext"
+    config_files:
+      - "tools.py"
+      - "agent.py"
+    risks:
+      - severity: high
+        pattern: "ServiceContext / Settings"
+        description: >
+          Sets model, temperature, chunk_size, token limits. All governance-relevant,
+          often looks like boilerplate.
+        checks: [11, 25]
+      - severity: high
+        pattern: "SimpleDirectoryReader, DatabaseReader, S3Reader"
+        description: "Data loaders — what data is being ingested? Could contain PII/PCI that gets embedded and sent to LLM."
+        checks: [7, 23]
+      - severity: medium
+        pattern: "Vector stores (Chroma, Pinecone, Weaviate)"
+        description: "Data persisted in vector DBs — data retention implications. Check if PII/PCI is being embedded."
+        checks: [7]
+      - severity: medium
+        pattern: "RetrieverQueryEngine"
+        description: "Check if retrieved context is validated before being sent to LLM (grounding check)."
+        checks: [21]
+      - severity: medium
+        pattern: "QueryEngineTool, FunctionTool"
+        description: "Same tool access concerns as LangChain."
+        checks: [15, 16]
+
+  langgraph:
+    name: "LangGraph"
+    detect:
+      - "from langgraph"
+      - "StateGraph"
+      - "MessageGraph"
+      - "add_node"
+      - "add_edge"
+    config_files:
+      - "graph.py"
+      - "state.py"
+      - "nodes.py"
+      - "edges.py"
+    risks:
+      - severity: critical
+        pattern: "add_conditional_edges"
+        description: >
+          LLM decides the next node to execute — autonomous routing.
+          If any node has side effects (API calls, DB writes), this is a human-in-the-loop concern.
+        checks: [16]
+      - severity: critical
+        pattern: "Graph cycles without recursion_limit"
+        description: >
+          LangGraph explicitly supports cycles. Check for recursion_limit — if missing
+          or high, unbounded loops.
+        checks: [10]
+      - severity: high
+        pattern: "Missing interrupt_before / interrupt_after"
+        description: >
+          Human-in-the-loop breakpoints. If a graph has consequential actions but
+          NO interrupts, flag for human-in-the-loop check.
+        checks: [16]
+      - severity: medium
+        pattern: "SqliteSaver, PostgresSaver"
+        description: "Conversation state stored — check for PII in state."
+        checks: [7]
+      - severity: medium
+        pattern: "ToolNode"
+        description: "Wraps tools — same concerns as LangChain tools."
+        checks: [15, 16]
+
+  google_adk:
+    name: "Google ADK (Agent Development Kit)"
+    detect:
+      - "from google.adk"
+      - "from google import adk"
+      - "SequentialAgent"
+      - "LoopAgent"
+    config_files:
+      - "agent.py"
+      - "tools.py"
+    risks:
+      - severity: high
+        pattern: "LoopAgent without max_iterations"
+        description: "Runs sub-agents in a loop — if max_iterations is missing, unbounded loops."
+        checks: [10]
+      - severity: medium
+        pattern: "SequentialAgent"
+        description: "Runs sub-agents in sequence — check what each sub-agent does."
+        checks: [16]
+      - severity: medium
+        pattern: "Missing before_model_callback / after_model_callback"
+        description: "If missing, no guardrails on model input/output."
+        checks: [18]
+      - severity: medium
+        pattern: "Session state with PII/PCI"
+        description: "Check if PII/PCI is stored in session state."
+        checks: [7, 23]
+
+  bedrock_agents:
+    name: "Amazon Bedrock Agents"
+    detect:
+      - "boto3.client('bedrock-agent')"
+      - "bedrock-agent-runtime"
+      - "action_groups"
+    config_files: []
+    risks:
+      - severity: high
+        pattern: "Action groups (Lambda functions)"
+        description: >
+          Define what Lambda functions the agent can invoke — the Lambda functions
+          ARE the attack surface. Check what they do.
+        checks: [15, 16]
+      - severity: high
+        pattern: "Knowledge bases"
+        description: "RAG via Bedrock — check data sources for PII/PCI."
+        checks: [7, 21, 23]
+      - severity: high
+        pattern: "Missing guardrailIdentifier"
+        description: "Bedrock has built-in guardrails — check if they're configured. Missing = no guardrails."
+        checks: [18]
+      - severity: low
+        pattern: "idleSessionTTLInSeconds"
+        description: "Session timeout — data retention implications."
+        checks: [7]
+
+  openai_agents:
+    name: "OpenAI Agents SDK"
+    detect:
+      - "from agents import Agent"
+      - "from openai.agents"
+      - "from agents import Runner"
+    config_files:
+      - "agent.py"
+      - "agents.py"
+      - "tools.py"
+    risks:
+      - severity: critical
+        pattern: "CodeInterpreterTool"
+        description: "Agent can execute arbitrary code in a sandbox. Check what data it has access to."
+        checks: [9, 15]
+      - severity: high
+        pattern: "handoff() / Handoff"
+        description: "Agent can hand off to other agents — check for unbounded delegation chains."
+        checks: [10, 16]
+      - severity: high
+        pattern: "FileSearchTool"
+        description: "Agent can search uploaded files — check for PII/PCI in file contents."
+        checks: [7, 23]
+      - severity: medium
+        pattern: "guardrails (input_guardrails, output_guardrails)"
+        description: "Good if present. If absent, no content filtering on agent I/O."
+        checks: [18]
+
+# ============================================================================
+# General patterns (applied when no specific framework is detected)
+# ============================================================================
+general_patterns:
+  description: >
+    If you cannot identify a specific framework, look for these universal patterns
+    and apply all 25 standard checks manually.
+  signals:
+    - pattern: "agent or Agent class"
+      description: "Custom agent implementation — apply all checks."
+    - pattern: "tool or Tool decorator/class"
+      description: "Custom tool definitions — check capabilities."
+    - pattern: "chain or pipeline"
+      description: "Multi-step processing — check for unbounded execution."
+    - pattern: "memory or state"
+      description: "Conversation/session state — check for PII retention."
+    - pattern: "callback or hook"
+      description: "Extensibility points — check for logging/data exposure."
+
+# ============================================================================
+# Instructions for the LLM reviewer
+# ============================================================================
+reviewer_instructions: >
+  When you detect a framework, mention it in the summary and apply the
+  framework-specific checks IN ADDITION to the standard 25 checks.
+  The framework detection should make your review MORE thorough,
+  not replace the standard checks.

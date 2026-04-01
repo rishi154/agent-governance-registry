@@ -118,6 +118,10 @@ async def get_stats(auth: tuple = Depends(optional_auth)):
         "mcp_online": await mcp.is_healthy(),
         "a2a_online": await a2a.is_healthy(),
         "governance_online": governance_agent.model is not None,
+        "enforcement": {
+            "approved": sum(1 for i in all_items if i.get("status") in ["active", "approved"]),
+            "blocked": sum(1 for i in all_items if i.get("status") in ["rejected", "pending_review", "under_review"]),
+        },
     }
 
 
@@ -413,21 +417,97 @@ async def get_agent_audit(agent_id: str, auth: tuple = Depends(require_permissio
 # Existing endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/api/agent/{agent_id}/tools")
-async def get_agent_tools(agent_id: str):
-    """Return all tools that belong to a specific agent."""
-    all_tools = aggregate_tools(await _get_all_tools())
-    return [t for t in all_tools if t.get("source_agent") == agent_id]
 
+# ---------------------------------------------------------------------------
+# Enforcement helpers
+# ---------------------------------------------------------------------------
+
+BLOCKED_STATUSES = {"rejected", "pending_review", "under_review"}
+
+def _check_enforcement(item_id: str, item_type: str = "agent") -> dict | None:
+    """Return enrichment if item is approved/active, else raise 403."""
+    enr = sqlite_store.get(item_id)
+    status = enr.get("status", "pending_review") if enr else "pending_review"
+    if status in BLOCKED_STATUSES:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "blocked_by_governance",
+                "item_id": item_id,
+                "item_type": item_type,
+                "status": status,
+                "message": f"{item_type.title()} '{item_id}' is not approved. Current status: {status}. "
+                           f"An admin must approve it before it can be invoked.",
+            },
+        )
+    return enr
+
+
+@app.get("/api/agents/{agent_id}/enforcement")
+async def get_enforcement_status(agent_id: str):
+    """Check whether an agent is approved and allowed to receive traffic.
+    
+    Designed to be called by A2A servers, gateways, or any consumer
+    before routing messages to an agent.
+    
+    Returns:
+        {"agent_id": ..., "allowed": true/false, "status": ..., "reason": ...}
+    """
+    enr = sqlite_store.get(agent_id)
+    status = enr.get("status", "unknown") if enr else "unknown"
+    allowed = status not in BLOCKED_STATUSES and status != "unknown"
+    
+    reason = None
+    if not enr:
+        reason = "Agent not registered in marketplace"
+    elif status in BLOCKED_STATUSES:
+        reason = f"Agent status is '{status}' — admin approval required"
+    
+    return {
+        "agent_id": agent_id,
+        "allowed": allowed,
+        "status": status,
+        "reason": reason,
+        "reviewed": bool(enr.get("ai_review")) if enr else False,
+    }
+
+
+@app.get("/api/enforcement/summary")
+async def enforcement_summary(auth: tuple = Depends(optional_auth)):
+    """Summary of all agents/tools and their enforcement status."""
+    enrichments = sqlite_store.all()
+    summary = {"approved": 0, "blocked": 0, "pending": 0, "items": []}
+    for item_id, enr in enrichments.items():
+        status = enr.get("status", "unknown")
+        allowed = status not in BLOCKED_STATUSES and status != "unknown"
+        bucket = "approved" if allowed else ("pending" if status in {"pending_review", "under_review"} else "blocked")
+        summary[bucket] += 1
+        summary["items"].append({
+            "id": item_id,
+            "type": enr.get("item_type", "unknown"),
+            "status": status,
+            "allowed": allowed,
+        })
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Proxy & Invoke (with enforcement)
+# ---------------------------------------------------------------------------
 
 class ProxyRequest(BaseModel):
     endpoint: str
     payload: dict = {}
     headers: dict = {}    # caller-supplied headers (Authorization, X-API-Key, etc.)
+    tool_id: str = ""     # optional — if provided, enforcement is checked
 
 @app.post("/api/proxy")
 async def proxy_tool_call(req: ProxyRequest):
-    """Forward a test call to a tool endpoint. Passes caller-supplied headers."""
+    """Forward a test call to a tool endpoint. Enforces governance approval."""
+    # Enforce governance if tool_id provided
+    if req.tool_id:
+        _check_enforcement(req.tool_id, "tool")
+    
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(req.endpoint, json=req.payload, headers=req.headers)
@@ -443,7 +523,10 @@ class InvokeAgentRequest(BaseModel):
 
 @app.post("/api/invoke-agent")
 async def invoke_agent(req: InvokeAgentRequest):
-    """Send an A2A-format message directly to an agent's receive endpoint."""
+    """Send an A2A-format message to an agent. Blocked if agent is not approved."""
+    # Enforce governance — reject if not approved
+    _check_enforcement(req.agent_id, "agent")
+    
     raw_agents = await a2a.get_agents()
     agent = next((a for a in raw_agents if a.get("agent_id") == req.agent_id), None)
     if not agent:
@@ -516,6 +599,9 @@ HTML = """<!DOCTYPE html>
     .dot-review   { background:#f59e0b; }
     .card-agent   { border-left: 4px solid #6366f1; }
     .card-tool    { border-left: 4px solid #0ea5e9; }
+    .card-blocked { opacity: 0.7; }
+    .badge-blocked{ background:#fee2e2; color:#991b1b; }
+    .badge-approved{ background:#d1fae5; color:#065f46; }
     .similar-warn { background:#fffbeb; border:1px solid #f59e0b; }
   </style>
 </head>
@@ -871,7 +957,8 @@ function renderCards(items) {
 
 function cardHTML(item) {
   const isAgent = item.item_type === 'agent';
-  const statusColor = { active: 'dot-active', deprecated: 'dot-deprecated', 'under-review': 'dot-review' }[item.status] || 'dot-active';
+  const isBlocked = ['pending_review','under_review','rejected'].includes(item.status);
+  const statusColor = { active: 'dot-active', approved: 'dot-active', deprecated: 'dot-deprecated', 'under-review': 'dot-review', 'under_review': 'dot-review', 'pending_review': 'dot-review', rejected: 'dot-deprecated' }[item.status] || 'dot-active';
   const badges = (item.compliance || []).map(c => `<span class="text-xs px-1.5 py-0.5 rounded font-medium ${badgeClass(c)}">${c}</span>`).join('');
   const authBadge = item.auth_required
     ? `<span class="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-50 text-orange-700">🔐 Auth</span>`
@@ -898,7 +985,7 @@ function cardHTML(item) {
     </div>
     <p class="text-xs text-gray-500 line-clamp-2 mb-2">${item.description || 'No description provided.'}</p>
     ${caps}
-    <div class="mt-3 flex flex-wrap gap-1">${badges}${authBadge}</div>
+    <div class="mt-3 flex flex-wrap gap-1">${badges}${authBadge}${isBlocked ? '<span class="text-xs px-1.5 py-0.5 rounded font-medium badge-blocked">🚫 Blocked</span>' : '<span class="text-xs px-1.5 py-0.5 rounded font-medium badge-approved">✓ Allowed</span>'}</div>
   </div>`;
 }
 
@@ -1004,8 +1091,172 @@ function aiReviewHTML(review) {
         ${recsHTML}
         ${humanBanner}
       </div>
+
+      ${review.ai_governance ? aiGovernanceSectionHTML(review.ai_governance) : ''}
     </dd>
   </div>`;
+}
+
+function aiGovernanceSectionHTML(gov) {
+  if (!gov) return '';
+
+  const classChip = (label, val, goodVals, badVals) => {
+    const cls = badVals.includes(val) ? 'bg-red-100 text-red-700'
+              : goodVals.includes(val) ? 'bg-green-100 text-green-700'
+              : 'bg-amber-100 text-amber-700';
+    return `<span class="text-xs px-2 py-0.5 rounded-full font-medium ${cls}">${label}: ${val}</span>`;
+  };
+
+  const issueList = (items) => {
+    if (!items || !items.length) return '';
+    return `<ul class="mt-1 space-y-0.5">${items.map(i =>
+      `<li class="text-xs text-red-600 flex gap-1.5"><span class="shrink-0">•</span><span>${i}</span></li>`).join('')}</ul>`;
+  };
+
+  const boolIcon = (val) => val ? '✅' : '❌';
+
+  const sections = [];
+
+  // 16. Human-in-the-Loop
+  if (gov.human_in_the_loop) {
+    const h = gov.human_in_the_loop;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">👤 Human-in-the-Loop</span>
+        ${classChip('', h.classification, ['required_and_present','not_required'], ['required_but_missing'])}
+      </div>
+      ${h.autonomous_actions?.length ? `<p class="text-xs text-gray-500">Autonomous actions: ${h.autonomous_actions.join(', ')}</p>` : ''}
+      <p class="text-xs text-gray-500">${boolIcon(h.has_escalation_path)} Escalation path &nbsp; ${boolIcon(h.has_confidence_threshold)} Confidence threshold</p>
+      ${issueList(h.issues)}
+    </div>`);
+  }
+
+  // 17. Model Transparency
+  if (gov.model_transparency) {
+    const m = gov.model_transparency;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">📋 Model Transparency</span>
+        ${classChip('', m.classification, ['comprehensive'], ['missing'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(m.model_declared)} Model declared &nbsp; ${boolIcon(m.limitations_documented)} Limitations documented &nbsp; ${boolIcon(m.intended_use_stated)} Intended use stated</p>
+      ${issueList(m.issues)}
+    </div>`);
+  }
+
+  // 18. Guardrails
+  if (gov.guardrails) {
+    const g = gov.guardrails;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">🛡️ Guardrails & Content Filtering</span>
+        ${classChip('', g.classification, ['implemented'], ['none'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(g.has_output_filtering)} Output filtering &nbsp; ${boolIcon(g.has_topic_restrictions)} Topic restrictions &nbsp; ${boolIcon(g.has_safety_layer)} Safety layer</p>
+      ${issueList(g.issues)}
+    </div>`);
+  }
+
+  // 19. Bias & Fairness
+  if (gov.bias_fairness) {
+    const b = gov.bias_fairness;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">⚖️ Bias & Fairness</span>
+        ${classChip('', b.classification, ['assessed','not_applicable'], ['at_risk'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(b.has_fairness_testing)} Fairness testing &nbsp; ${b.uses_proxy_variables ? '⚠️ Uses proxy variables' : '✅ No proxy variables'}</p>
+      ${issueList(b.issues)}
+    </div>`);
+  }
+
+  // 20. Explainability
+  if (gov.explainability) {
+    const e = gov.explainability;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">🔍 Explainability & Auditability</span>
+        ${classChip('', e.classification, ['comprehensive'], ['none'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(e.has_decision_logging)} Decision logging &nbsp; ${boolIcon(e.has_reasoning_traces)} Reasoning traces &nbsp; ${boolIcon(e.has_user_explanations)} User explanations</p>
+      ${issueList(e.issues)}
+    </div>`);
+  }
+
+  // 21. Grounding
+  if (gov.grounding) {
+    const g = gov.grounding;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">📌 Grounding & RAG</span>
+        ${classChip('', g.classification, ['grounded','not_applicable'], ['ungrounded'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(g.uses_rag)} Uses RAG &nbsp; ${boolIcon(g.has_source_attribution)} Source attribution &nbsp; ${boolIcon(g.has_source_validation)} Source validation</p>
+      ${issueList(g.issues)}
+    </div>`);
+  }
+
+  // 22. Model Fallback
+  if (gov.model_fallback) {
+    const f = gov.model_fallback;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">🔄 Model Fallback & Degradation</span>
+        ${classChip('', f.classification, ['resilient'], ['fragile'])}
+      </div>
+      <p class="text-xs text-gray-500">Failure mode: ${f.failure_mode || 'unknown'} &nbsp; ${boolIcon(f.has_fallback_logic)} Fallback logic &nbsp; ${boolIcon(f.has_circuit_breaker)} Circuit breaker</p>
+      ${issueList(f.issues)}
+    </div>`);
+  }
+
+  // 23. Data Sent to Provider
+  if (gov.data_sent_to_provider) {
+    const d = gov.data_sent_to_provider;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">📤 Data Sent to Model Provider</span>
+        ${classChip('', d.classification, ['safe'], ['confirmed_exposure'])}
+      </div>
+      <p class="text-xs text-gray-500">${d.pii_in_prompts ? '🔴 PII in prompts' : '✅ No PII in prompts'} &nbsp; ${d.pci_in_prompts ? '🔴 PCI in prompts' : '✅ No PCI in prompts'} &nbsp; ${boolIcon(d.data_minimization)} Data minimization</p>
+      ${issueList(d.issues)}
+    </div>`);
+  }
+
+  // 24. Consent & Disclosure
+  if (gov.consent_disclosure) {
+    const c = gov.consent_disclosure;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">📜 Consent & AI Disclosure</span>
+        ${classChip('', c.classification, ['compliant','not_applicable'], ['missing'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(c.has_ai_disclosure)} AI disclosure &nbsp; ${boolIcon(c.has_consent_mechanism)} Consent mechanism &nbsp; ${boolIcon(c.has_opt_out)} Opt-out</p>
+      ${issueList(c.issues)}
+    </div>`);
+  }
+
+  // 25. Model Version Pinning
+  if (gov.model_version_pinning) {
+    const v = gov.model_version_pinning;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">📌 Model Version Pinning</span>
+        ${classChip('', v.classification, ['pinned'], ['floating'])}
+      </div>
+      <p class="text-xs text-gray-500">Version: ${v.detected_version || 'unknown'} &nbsp; ${boolIcon(v.version_in_config)} In config &nbsp; ${boolIcon(v.has_regression_tests)} Regression tests</p>
+      ${issueList(v.issues)}
+    </div>`);
+  }
+
+  if (!sections.length) return '';
+
+  return `
+    <div class="mt-3 border-t border-gray-200 pt-3">
+      <p class="text-xs font-semibold text-purple-700 mb-2">🏛️ AI Governance Assessment</p>
+      <div class="space-y-1">
+        ${sections.join('')}
+      </div>
+    </div>`;
 }
 
 // ============================================================
@@ -1015,6 +1266,15 @@ async function openDetail(itemId) {
   const item = itemCache[itemId];
   if (!item) return;
   const isAgent = item.item_type === 'agent';
+  const isBlocked = ['pending_review','under_review','rejected'].includes(item.status);
+  const enforcementBadge = isBlocked
+    ? `<div class="mt-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-800 font-semibold">
+        🚫 BLOCKED — This ${isAgent ? 'agent' : 'tool'} cannot be invoked. Status: ${item.status}.
+        ${item.status === 'rejected' ? 'It was rejected by an admin.' : 'Admin approval required.'}
+      </div>`
+    : `<div class="mt-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800 font-semibold">
+        ✓ APPROVED — This ${isAgent ? 'agent' : 'tool'} is allowed to receive traffic.
+      </div>`;
   const badges = (item.compliance || []).map(c => `<span class="text-xs px-2 py-1 rounded font-medium ${badgeClass(c)}">${c}</span>`).join('');
   const caps = isAgent && item.capabilities?.length
     ? `<div class="mt-1 flex flex-wrap gap-1">${item.capabilities.map(c=>`<span class="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded">${c.replace(/_/g,' ')}</span>`).join('')}</div>`
@@ -1062,6 +1322,7 @@ async function openDetail(itemId) {
           <span class="text-xs font-medium px-2 py-0.5 rounded ${isAgent?'bg-indigo-100 text-indigo-700':'bg-sky-100 text-sky-700'}">${isAgent ? 'Agent' : 'Tool'}</span>
         </div>
       </div>
+      ${enforcementBadge}
       ${item.status === 'under_review' ? `
       <div class="mt-3 flex gap-2">
         <button onclick="approveAgent('${item.id}')" class="flex-1 bg-green-600 text-white text-xs font-semibold py-2 rounded-lg hover:bg-green-700 transition">
@@ -1391,6 +1652,16 @@ async function runTryIt(endpoint) {
   const payloadRaw = document.getElementById('tryItPayload').value;
   const resultEl = document.getElementById('tryItResult');
   resultEl.classList.remove('hidden');
+
+  // Check enforcement — find the current item from cache
+  const currentItem = Object.values(itemCache).find(i => 
+    (i.endpoint === endpoint || i.sandbox_endpoint === endpoint));
+  if (currentItem && ['pending_review','under_review','rejected'].includes(currentItem.status)) {
+    resultEl.textContent = `\u26d4 BLOCKED by governance.\nStatus: ${currentItem.status}\nThis tool must be approved by an admin before it can be invoked.`;
+    resultEl.className = resultEl.className.replace('text-green-400','text-red-400');
+    return;
+  }
+
   resultEl.textContent = 'Calling...';
 
   // Collect any headers the user filled in
@@ -1431,6 +1702,15 @@ async function runAgentTry(agentId) {
   const payloadRaw = document.getElementById('agentTryPayload').value;
   const resultEl = document.getElementById('agentTryResult');
   resultEl.classList.remove('hidden');
+
+  // Check enforcement
+  const agent = itemCache[agentId];
+  if (agent && ['pending_review','under_review','rejected'].includes(agent.status)) {
+    resultEl.textContent = `\u26d4 BLOCKED by governance.\nStatus: ${agent.status}\nThis agent must be approved by an admin before it can receive messages.`;
+    resultEl.className = resultEl.className.replace('text-green-400','text-red-400');
+    return;
+  }
+
   resultEl.textContent = 'Sending A2A message...';
   try {
     const payload = JSON.parse(payloadRaw);

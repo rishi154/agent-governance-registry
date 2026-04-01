@@ -1,0 +1,6 @@
+# ⚠️ GOVERNANCE VIOLATION: Unpinned dependencies (check 13)
+fastapi
+uvicorn
+httpx
+openai
+pydantic

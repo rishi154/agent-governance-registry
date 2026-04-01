@@ -6,7 +6,7 @@ Lightweight governance platform for AI agent ecosystems with automated security 
 
 ## Features
 
-- **Automated AI Governance**: 15 comprehensive checks (LLM usage, PII/PCI detection, prompt injection, cost tracking)
+- **Automated AI Governance**: 25 comprehensive checks (15 security + 10 AI governance)
 - **Approval Workflow**: Human-in-the-loop review with pending → under_review → approved/rejected states
 - **Authentication & RBAC**: API key-based auth with 3 roles (viewer, developer, admin)
 - **SQLite Storage**: Scalable database with audit logging
@@ -193,6 +193,7 @@ python test_duplicate_registration.py
 
 ## Governance Checks
 
+### Infrastructure & Security (1-15)
 1. LLM/Model Usage Detection (hardcoded API keys, model references)
 2. Secrets & Credentials Detection
 3. PII Scope Detection (SSN, credit cards, emails, phone numbers)
@@ -208,6 +209,18 @@ python test_duplicate_registration.py
 13. Input Validation & Sanitization
 14. Prompt Injection Detection
 15. Error Handling & Logging
+
+### AI Governance (16-25)
+16. Human-in-the-Loop Requirements (autonomous decisions, escalation paths)
+17. Model Card & Transparency (model declaration, limitations, intended use)
+18. Guardrails & Content Filtering (output safety, topic restrictions)
+19. Bias & Fairness (protected class impact, proxy variables, feedback loops)
+20. Explainability & Auditability (decision logging, reasoning traces)
+21. Grounding & RAG Validation (source attribution, stale data)
+22. Model Fallback & Degradation (fail-open vs fail-closed, circuit breakers)
+23. Data Sent to Model Provider (PII/PCI in prompts, data minimization)
+24. Consent & AI Disclosure (GDPR Art. 22, opt-out mechanisms)
+25. Model Version Pinning (floating vs pinned versions, regression tests)
 
 ## Deployment Options
 
