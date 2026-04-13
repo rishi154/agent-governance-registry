@@ -955,7 +955,7 @@ Return ONLY a JSON object as described in your instructions."""
             response = await self.model.generate_content_async(
                 user_message,
                 generation_config=self.GenerationConfig(
-                    max_output_tokens=8192,  # Sized for 30-check comprehensive output
+                    max_output_tokens=16384,  # Sized for 30-check comprehensive output
                     temperature=0.0,  # Deterministic — same code = same review
                 ),
             )
