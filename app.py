@@ -635,7 +635,7 @@ HTML = """<!DOCTYPE html>
     <span>A2A Server: <span id="a2aStatus" class="font-semibold">checking...</span></span>
     <button onclick="document.getElementById('checksModal').classList.remove('hidden')" class="ml-auto text-indigo-300 hover:text-white text-xs font-medium flex items-center gap-1">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-      25 Governance Checks
+      30 Governance Checks
     </button>
   </div>
 </header>
@@ -644,12 +644,12 @@ HTML = """<!DOCTYPE html>
 <div id="checksModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick="if(event.target===this)this.classList.add('hidden')">
   <div class="bg-white rounded-2xl shadow-2xl w-[640px] max-h-[80vh] overflow-y-auto p-6">
     <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-bold text-gray-800">25 AI Governance Checks</h2>
+      <h2 class="text-lg font-bold text-gray-800">30 AI Governance Checks</h2>
       <button onclick="document.getElementById('checksModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
-    <p class="text-xs text-gray-500 mb-4">Every agent and tool is automatically reviewed against these checks by the AI governance engine. Results appear in the detail panel after registration.</p>
+      <p class="text-xs text-gray-500 mb-4">Every agent and tool is automatically reviewed against these checks by the AI governance engine. Results appear in the detail panel after registration.</p>
     <div class="mb-4">
       <p class="text-xs font-semibold text-indigo-700 uppercase mb-2">Infrastructure &amp; Security (1–15)</p>
       <div class="grid grid-cols-1 gap-1">
@@ -671,7 +671,7 @@ HTML = """<!DOCTYPE html>
       </div>
     </div>
     <div class="mb-4">
-      <p class="text-xs font-semibold text-purple-700 uppercase mb-2">AI Governance (16–25)</p>
+      <p class="text-xs font-semibold text-purple-700 uppercase mb-2">AI Governance (16–30)</p>
       <div class="grid grid-cols-1 gap-1">
         <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">16.</span><span><span class="font-semibold text-gray-700">Human-in-the-Loop</span> <span class="text-gray-400">— autonomous decisions, escalation paths, confidence thresholds</span></span></div>
         <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">17.</span><span><span class="font-semibold text-gray-700">Model Card &amp; Transparency</span> <span class="text-gray-400">— model declaration, limitations, intended use</span></span></div>
@@ -683,6 +683,11 @@ HTML = """<!DOCTYPE html>
         <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">23.</span><span><span class="font-semibold text-gray-700">Data Sent to Model Provider</span> <span class="text-gray-400">— PII/PCI in prompts, data minimization</span></span></div>
         <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">24.</span><span><span class="font-semibold text-gray-700">Consent &amp; AI Disclosure</span> <span class="text-gray-400">— GDPR Art. 22, opt-out mechanisms</span></span></div>
         <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">25.</span><span><span class="font-semibold text-gray-700">Model Version Pinning</span> <span class="text-gray-400">— floating vs pinned versions, regression tests</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">26.</span><span><span class="font-semibold text-gray-700">Agent Identity & Impersonation</span> <span class="text-gray-400">— DID verification, caller authentication, spoofing prevention</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">27.</span><span><span class="font-semibold text-gray-700">Output Persistence & Downstream Impact</span> <span class="text-gray-400">— DB writes, external API calls, irreversible actions from agent output</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">28.</span><span><span class="font-semibold text-gray-700">Cross-Agent Data Leakage</span> <span class="text-gray-400">— PII/PCI leaking across agent boundaries in A2A chains</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">29.</span><span><span class="font-semibold text-gray-700">Temporal Validity</span> <span class="text-gray-400">— stale exchange rates, sanctions lists, credit scores in decisions</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">30.</span><span><span class="font-semibold text-gray-700">Adversarial Robustness</span> <span class="text-gray-400">— prompt injection defense, jailbreak resistance, data exfiltration prevention</span></span></div>
       </div>
     </div>
     <div class="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
@@ -1309,6 +1314,71 @@ function aiGovernanceSectionHTML(gov) {
       </div>
       <p class="text-xs text-gray-500">Version: ${v.detected_version || 'unknown'} &nbsp; ${boolIcon(v.version_in_config)} In config &nbsp; ${boolIcon(v.has_regression_tests)} Regression tests</p>
       ${issueList(v.issues)}
+    </div>`);
+  }
+
+  // 26. Agent Identity & Impersonation
+  if (gov.agent_identity) {
+    const a = gov.agent_identity;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">🎭 Agent Identity</span>
+        ${classChip('', a.classification, ['verified'], ['none'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(a.has_did)} DID &nbsp; ${boolIcon(a.verifies_callers)} Verifies callers &nbsp; ${boolIcon(a.has_signature_verification)} Signature verification</p>
+      ${issueList(a.issues)}
+    </div>`);
+  }
+
+  // 27. Output Persistence & Downstream Impact
+  if (gov.output_persistence) {
+    const o = gov.output_persistence;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">💾 Output Persistence</span>
+        ${classChip('', o.classification, ['no_persistence','controlled'], ['uncontrolled'])}
+      </div>
+      <p class="text-xs text-gray-500">${o.writes_to_database ? '⚠️ Writes to DB' : '✅ No DB writes'} &nbsp; ${o.calls_external_systems ? '⚠️ Calls external systems' : '✅ No external calls'} &nbsp; ${boolIcon(o.has_rollback)} Rollback</p>
+      ${issueList(o.issues)}
+    </div>`);
+  }
+
+  // 28. Cross-Agent Data Leakage
+  if (gov.cross_agent_data_leakage) {
+    const x = gov.cross_agent_data_leakage;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">🔀 Cross-Agent Data Leakage</span>
+        ${classChip('', x.classification, ['isolated'], ['leaking'])}
+      </div>
+      <p class="text-xs text-gray-500">${x.forwards_sensitive_context ? '🔴 Forwards sensitive context' : '✅ No context forwarding'} &nbsp; ${boolIcon(x.has_data_scoping)} Data scoping &nbsp; ${x.leaks_in_logs ? '🔴 Leaks in logs' : '✅ Clean logs'}</p>
+      ${issueList(x.issues)}
+    </div>`);
+  }
+
+  // 29. Temporal Validity
+  if (gov.temporal_validity) {
+    const t = gov.temporal_validity;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">⏰ Temporal Validity</span>
+        ${classChip('', t.classification, ['current','not_applicable'], ['at_risk'])}
+      </div>
+      <p class="text-xs text-gray-500">${t.uses_time_sensitive_data ? '⚠️ Time-sensitive data' : '✅ No time-sensitive data'} &nbsp; ${boolIcon(t.has_staleness_checks)} Staleness checks &nbsp; ${boolIcon(t.has_ttl)} TTL</p>
+      ${issueList(t.issues)}
+    </div>`);
+  }
+
+  // 30. Adversarial Robustness
+  if (gov.adversarial_robustness) {
+    const r = gov.adversarial_robustness;
+    sections.push(`<div class="mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-xs font-semibold text-gray-700">🛡️ Adversarial Robustness</span>
+        ${classChip('', r.classification, ['hardened'], ['vulnerable'])}
+      </div>
+      <p class="text-xs text-gray-500">${boolIcon(r.has_prompt_injection_defense)} Prompt injection defense &nbsp; ${boolIcon(r.has_input_fuzzing)} Input fuzzing &nbsp; ${boolIcon(r.has_jailbreak_resistance)} Jailbreak resistance</p>
+      ${issueList(r.issues)}
     </div>`);
   }
 

@@ -1,7 +1,7 @@
 """
 GovernanceAgent: Comprehensive AI-powered governance review.
 
-25 governance checks across 3 domains:
+30 governance checks across 3 domains:
 
 --- Infrastructure & Security (1-15) ---
 1.  PCI-DSS Scope Detection
@@ -20,7 +20,7 @@ GovernanceAgent: Comprehensive AI-powered governance review.
 14. Observability & Monitoring
 15. Input Validation & Sanitization
 
---- AI Governance (16-25) ---
+--- AI Governance (16-30) ---
 16. Human-in-the-Loop Requirements
 17. Model Card & Transparency
 18. Guardrails & Content Filtering
@@ -31,6 +31,11 @@ GovernanceAgent: Comprehensive AI-powered governance review.
 23. Data Sent to Model Provider
 24. Consent & AI Disclosure
 25. Model Version Pinning
+26. Agent Identity & Impersonation
+27. Output Persistence & Downstream Impact
+28. Cross-Agent Data Leakage
+29. Temporal Validity
+30. Adversarial Robustness
 """
 
 import os
@@ -301,7 +306,7 @@ Risk flags:
 - "No input validation"
 
 ## ═══════════════════════════════════════════════════════════════
-## AI GOVERNANCE CHECKS (16-25)
+## AI GOVERNANCE CHECKS (16-30)
 ## These assess how responsibly AI/LLM capabilities are used.
 ## ═══════════════════════════════════════════════════════════════
 
@@ -538,6 +543,145 @@ Risk flags:
 - "No regression tests to detect model behavior changes"
 - "No rollback mechanism for model version changes"
 
+### 26. Agent Identity & Impersonation (HIGH)
+Can this agent be spoofed? Does it verify its own identity and the identity of callers?
+
+Check for:
+- **DID usage**: Does the agent use a Decentralized Identifier (DID) for identity?
+  Is the DID verified or self-asserted?
+- **Caller verification**: Does the agent verify the identity of incoming messages?
+  (e.g. checking `from_did`, validating signatures, verifying JWS/JWT)
+- **Impersonation risk**: Could another agent send messages pretending to be this agent?
+  Is the agent's endpoint publicly accessible without auth?
+- **Identity consistency**: Does the agent identify itself consistently across
+  A2A messages, API responses, and logs?
+
+Classify:
+- verified: DID-based identity with signature verification
+- partial: Some identity checks but gaps (e.g. self-asserted DID, no signature verification)
+- none: No identity verification — agent can be spoofed
+
+Risk flags:
+- "No caller identity verification — accepts messages from any source"
+- "Self-asserted DID without cryptographic verification"
+- "Agent endpoint publicly accessible without authentication"
+- "Inconsistent identity across A2A messages and API responses"
+
+### 27. Output Persistence & Downstream Impact (HIGH)
+Does this agent's output get stored permanently or trigger actions in other systems?
+
+A "read-only" agent that writes decisions to a database, sends emails, updates
+customer records, or feeds another system is NOT read-only — it has downstream impact.
+
+Check for:
+- **Database writes**: Does the agent INSERT/UPDATE records in any database?
+- **API calls to other systems**: Does the agent POST to external services
+  (CRM, ticketing, notification systems, ledgers)?
+- **File/document generation**: Does the agent create files, PDFs, reports
+  that become permanent records?
+- **Event emission**: Does the agent publish events to message queues (Kafka, SQS, etc.)
+  that trigger downstream processing?
+- **Reversibility**: If the agent makes a mistake, can the downstream impact be undone?
+
+Classify:
+- no_persistence: Agent output is ephemeral — not stored or forwarded
+- controlled: Output persisted but with audit trail and rollback capability
+- uncontrolled: Output persisted or forwarded with no rollback mechanism
+
+Risk flags:
+- "Agent writes decisions to database with no rollback mechanism"
+- "Output forwarded to downstream systems — errors propagate permanently"
+- "Agent generates permanent records (reports, documents) from LLM output"
+- "Events published to message queue trigger irreversible downstream actions"
+
+### 28. Cross-Agent Data Leakage (CRITICAL)
+When this agent communicates with other agents, does sensitive data leak across boundaries?
+
+This is critical in A2A architectures where agents chain through each other.
+
+Check for:
+- **Context forwarding**: When agent A calls agent B, does A's full context
+  (including customer PII/PCI) get included in the message to B?
+- **Log contamination**: Does agent B log the message from agent A, including
+  sensitive data that B shouldn't have access to?
+- **Memory leakage**: If agent B has conversation memory, does data from agent A's
+  request persist in B's memory and get included in future unrelated requests?
+- **Scope creep**: Does the agent receive more data than it needs from callers?
+  (e.g. full customer record when it only needs an ID)
+- **Response leakage**: Does the agent include sensitive data from its context
+  in responses to callers who shouldn't see it?
+
+Classify:
+- isolated: Agent receives only what it needs, doesn't leak data in responses or logs
+- partial: Some data isolation but gaps exist
+- leaking: Sensitive data flows freely across agent boundaries
+
+Risk flags:
+- "Full customer context forwarded to downstream agents"
+- "Sensitive data from caller persists in agent memory"
+- "Agent logs contain PII/PCI from other agents' requests"
+- "Response includes data the caller shouldn't have access to"
+
+### 29. Temporal Validity (HIGH)
+Does this agent use time-sensitive data? If so, are staleness checks in place?
+
+This is distinct from check #21 (RAG grounding). This check focuses specifically on
+whether the agent's data sources have a time dimension that affects correctness.
+
+Check for:
+- **Time-sensitive data sources**: Does the agent use exchange rates, credit scores,
+  sanctions lists, regulatory rules, pricing data, or other data that changes over time?
+- **Staleness detection**: Is there a TTL (time-to-live) or freshness check on data
+  before it's used in decisions? (e.g. "reject if exchange rate is >5 minutes old")
+- **Cache invalidation**: If the agent caches data, is there a mechanism to invalidate
+  stale entries?
+- **Timestamp awareness**: Does the agent check when its data was last updated
+  before making decisions?
+- **Regulatory impact**: Could using stale data violate regulations?
+  (e.g. using yesterday's sanctions list to clear a transaction today)
+
+Classify:
+- current: Freshness checks in place, TTLs defined, stale data rejected
+- at_risk: Uses time-sensitive data but no staleness checks
+- not_applicable: Agent does not use time-sensitive data
+
+Risk flags:
+- "Uses exchange rates/pricing without freshness check"
+- "Sanctions list may be stale — no TTL or update mechanism"
+- "Cached data used in decisions without staleness validation"
+- "No timestamp awareness — cannot determine data freshness"
+
+### 30. Adversarial Robustness (CRITICAL)
+How does this agent handle intentionally malicious inputs?
+
+Payment processors are high-value targets. Adversarial attacks on AI agents include
+prompt injection, data exfiltration, jailbreaking, and model manipulation.
+
+Check for:
+- **Prompt injection defense**: Can a malicious user craft input that overrides
+  the agent's system prompt or instructions? (e.g. "Ignore previous instructions and...")
+- **Data exfiltration via prompt**: Can an attacker extract the system prompt,
+  training data, or other agents' data through carefully crafted queries?
+- **Jailbreak resistance**: Can the agent be manipulated into bypassing its guardrails
+  or generating content it's supposed to refuse?
+- **Input fuzzing resilience**: Does the agent handle malformed, oversized, or
+  unexpected input gracefully without crashing or leaking information?
+- **Adversarial examples**: For agents that process structured data (transactions,
+  applications), can adversarial inputs cause misclassification?
+  (e.g. crafted transaction that evades fraud detection)
+
+Classify:
+- hardened: Explicit adversarial defenses (input sanitization, prompt isolation, fuzzing tests)
+- partial: Some defenses but gaps in coverage
+- vulnerable: No adversarial defenses — standard prompt injection would likely succeed
+
+Risk flags:
+- "No prompt injection defense — system prompt likely extractable"
+- "User input concatenated directly into LLM prompt without isolation"
+- "No input fuzzing or adversarial testing evidence"
+- "Agent could be jailbroken to bypass fraud detection rules"
+- "Sensitive data (system prompt, other agents' data) extractable via prompt manipulation"
+
 {{FRAMEWORK_PATTERNS}}
 
 ## Output Format
@@ -677,6 +821,41 @@ Return ONLY a valid JSON object — no markdown fences, no explanation text:
       "version_in_config": true or false,
       "has_regression_tests": true or false,
       "issues": ["<version pinning issues>"]
+    },
+    "agent_identity": {
+      "classification": "verified" | "partial" | "none",
+      "has_did": true or false,
+      "verifies_callers": true or false,
+      "has_signature_verification": true or false,
+      "issues": ["<identity/impersonation issues>"]
+    },
+    "output_persistence": {
+      "classification": "no_persistence" | "controlled" | "uncontrolled",
+      "writes_to_database": true or false,
+      "calls_external_systems": true or false,
+      "has_rollback": true or false,
+      "issues": ["<downstream impact issues>"]
+    },
+    "cross_agent_data_leakage": {
+      "classification": "isolated" | "partial" | "leaking",
+      "forwards_sensitive_context": true or false,
+      "has_data_scoping": true or false,
+      "leaks_in_logs": true or false,
+      "issues": ["<data leakage issues>"]
+    },
+    "temporal_validity": {
+      "classification": "current" | "at_risk" | "not_applicable",
+      "uses_time_sensitive_data": true or false,
+      "has_staleness_checks": true or false,
+      "has_ttl": true or false,
+      "issues": ["<temporal validity issues>"]
+    },
+    "adversarial_robustness": {
+      "classification": "hardened" | "partial" | "vulnerable",
+      "has_prompt_injection_defense": true or false,
+      "has_input_fuzzing": true or false,
+      "has_jailbreak_resistance": true or false,
+      "issues": ["<adversarial robustness issues>"]
     }
   }
 }
@@ -769,7 +948,7 @@ class GovernanceAgent:
 ## Existing Catalog
 {catalog_summary}
 
-Perform comprehensive governance review covering all 25 categories (15 infrastructure/security + 10 AI governance).
+Perform comprehensive governance review covering all 30 categories (15 infrastructure/security + 15 AI governance).
 Return ONLY a JSON object as described in your instructions."""
 
         try:
