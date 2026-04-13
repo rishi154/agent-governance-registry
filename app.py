@@ -1997,7 +1997,6 @@ async def scan_and_review_agents():
                         "auth_assessment": "Cannot assess without source code"
                     },
                     "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
-                    "status": "under_review",
                 })
                 sqlite_store.log_action(agent_id, "warning_review_created", "system", {"reason": "no_source_repo"})
                 continue
