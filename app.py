@@ -44,17 +44,20 @@ from src.auth import verify_api_key, require_permission, optional_auth, ALLOW_UN
 
 from src.governance_agent import governance_agent  # must be after load_dotenv()
 
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "") or os.getenv("TEAMS_WEBHOOK_URL", "")
 
 async def _notify(message: str):
-    """Send notification to Slack. Fire-and-forget — never blocks."""
+    """Send notification to Slack or Microsoft Teams. Fire-and-forget."""
     if not SLACK_WEBHOOK_URL:
         return
     try:
+        # Teams uses a different payload format
+        is_teams = "webhook.office.com" in SLACK_WEBHOOK_URL or "workflows.office.com" in SLACK_WEBHOOK_URL
+        payload = {"text": message} if is_teams else {"text": message}
         async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post(SLACK_WEBHOOK_URL, json={"text": message})
+            await client.post(SLACK_WEBHOOK_URL, json=payload)
     except Exception as e:
-        logger.debug(f"Slack notification failed: {e}")
+        logger.debug(f"Notification failed: {e}")
 
 app = FastAPI(title="Agent Marketplace", version="1.0.0")
 mcp = MCPClient()
