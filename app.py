@@ -224,12 +224,15 @@ async def register_agent(req: RegisterAgentRequest, auth: tuple = Depends(requir
         "compliance": req.compliance,
         "docs_url": req.docs_url,
         "source_repo": req.source_repo,
-        "status": "pending_review",  # Always pending until approved
         "item_type": "agent",
         "description": req.description,
         "registered_at": existing_enrichment.get("registered_at") if existing_enrichment else datetime.utcnow().strftime("%Y-%m-%d"),
         "discovery_method": "marketplace",  # Mark as marketplace registration
     }
+    
+    # Only set pending_review if agent is new or has no review yet
+    if not existing_enrichment or not existing_enrichment.get("ai_review"):
+        new_enrichment["status"] = "pending_review"
     
     # Preserve existing AI review if present (don't overwrite auto-detected review)
     if existing_enrichment and existing_enrichment.get("ai_review"):
