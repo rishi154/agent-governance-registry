@@ -79,44 +79,42 @@ class SQLiteStore:
         finally:
             conn.close()
     
+    # Columns that can be updated via save()
+    _UPDATABLE_COLUMNS = {
+        "owner_team", "source_repo", "description", "status",
+        "discovery_method", "compliance", "docs_url", "item_type",
+    }
+
     def save(self, agent_id: str, data: dict):
-        """Save or update agent enrichment data."""
+        """Save or update agent enrichment data.
+        
+        On UPDATE: only columns present in `data` are modified.
+        Missing keys are left untouched (no more overwriting with defaults).
+        On INSERT: missing keys get sensible defaults.
+        """
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         
         with self._get_conn() as conn:
-            # Check if exists
             existing = conn.execute(
                 "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,)
             ).fetchone()
             
-            compliance_json = json.dumps(data.get("compliance", []))
-            
             if existing:
-                # Update
-                conn.execute("""
-                    UPDATE agents SET
-                        owner_team = ?,
-                        source_repo = ?,
-                        description = ?,
-                        status = ?,
-                        discovery_method = ?,
-                        compliance = ?,
-                        docs_url = ?,
-                        updated_at = ?
-                    WHERE agent_id = ?
-                """, (
-                    data.get("owner_team", "Unassigned"),
-                    data.get("source_repo", ""),
-                    data.get("description", ""),
-                    data.get("status", "pending_review"),
-                    data.get("discovery_method", "marketplace"),
-                    compliance_json,
-                    data.get("docs_url", ""),
-                    now,
-                    agent_id
-                ))
+                # Build SET clause from only the keys that were provided
+                sets, vals = ["updated_at = ?"], [now]
+                for col in self._UPDATABLE_COLUMNS:
+                    if col in data:
+                        val = json.dumps(data[col]) if col == "compliance" else data[col]
+                        sets.append(f"{col} = ?")
+                        vals.append(val)
+                vals.append(agent_id)
+                conn.execute(
+                    f"UPDATE agents SET {', '.join(sets)} WHERE agent_id = ?",
+                    vals,
+                )
             else:
-                # Insert
+                # Insert — use defaults for missing keys
+                compliance_json = json.dumps(data.get("compliance", []))
                 conn.execute("""
                     INSERT INTO agents (
                         agent_id, owner_team, source_repo, description,
@@ -134,10 +132,10 @@ class SQLiteStore:
                     compliance_json,
                     data.get("docs_url", ""),
                     data.get("registered_at", now),
-                    now
+                    now,
                 ))
             
-            # Save review if present
+            # Save review if present (append — never overwrite history)
             if "ai_review" in data:
                 conn.execute("""
                     INSERT INTO reviews (agent_id, review_data, reviewed_at)
@@ -145,7 +143,7 @@ class SQLiteStore:
                 """, (
                     agent_id,
                     json.dumps(data["ai_review"]),
-                    data.get("ai_reviewed_at", now)
+                    data.get("ai_reviewed_at", now),
                 ))
     
     def get(self, agent_id: str) -> dict:

@@ -6,7 +6,6 @@ Run: python app.py  →  http://localhost:8000
 
 import json
 import logging
-import shutil
 import httpx
 import uvicorn
 import asyncio
@@ -142,29 +141,6 @@ async def governance_status():
         ),
     }
 
-
-@app.post("/api/demo/reset")
-async def demo_reset():
-    """
-    Resets the marketplace to the clean demo baseline.
-    Restores enrichments.json from data/enrichments.baseline.json.
-    FOR DEMO USE ONLY — wipes all current enrichments including AI reviews.
-    """
-    baseline = Path(__file__).parent / "data" / "enrichments.baseline.json"
-    target   = Path(__file__).parent / "data" / "enrichments.json"
-    if not baseline.exists():
-        raise HTTPException(status_code=404, detail="enrichments.baseline.json not found")
-    shutil.copy2(baseline, target)
-    data = json.loads(target.read_text())
-    agents = [k for k, v in data.items() if v.get("item_type") == "agent"]
-    tools  = [k for k, v in data.items() if v.get("item_type") == "tool"]
-    logger.info(f"Demo reset: {len(agents)} agents, {len(tools)} tools from baseline")
-    return {
-        "status": "reset",
-        "agents": agents,
-        "tools": tools,
-        "message": f"Reset to baseline: {len(agents)} agent(s), {len(tools)} tool(s). Restart the A2A server for a fully clean agent registry.",
-    }
 
 
 @app.get("/api/agents")
@@ -507,6 +483,29 @@ async def proxy_tool_call(req: ProxyRequest):
     # Enforce governance if tool_id provided
     if req.tool_id:
         _check_enforcement(req.tool_id, "tool")
+    
+    # SSRF protection: only allow proxying to registered endpoints
+    allowed_endpoints = set()
+    all_enrichments = sqlite_store.all()
+    for enr in all_enrichments.values():
+        for field in ("endpoint", "sandbox_endpoint"):
+            ep = enr.get(field, "")
+            if ep:
+                allowed_endpoints.add(ep)
+    # Also allow MCP tool endpoints
+    try:
+        for tool in await mcp.get_tools():
+            ep = tool.get("endpoint", "")
+            if ep:
+                allowed_endpoints.add(ep)
+    except Exception:
+        pass
+    
+    if req.endpoint not in allowed_endpoints:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Endpoint not in allowlist. Only registered tool/agent endpoints can be proxied.",
+        )
     
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:

@@ -4,56 +4,15 @@ Marketplace core logic:
 - find_similar: keyword-based duplication detection
 """
 
-import json
 import re
 import logging
-from pathlib import Path
 from datetime import datetime
-from typing import Optional
 from src.sqlite_store import sqlite_store
 
 logger = logging.getLogger(__name__)
 
-ENRICHMENTS_PATH = Path(__file__).parent.parent / "data" / "enrichments.json"
-
 COMPLIANCE_OPTIONS = ["PCI-Scoped", "PII-Safe", "Sandbox-Only", "Production-Ready", "Internal-Only"]
 STATUS_OPTIONS = ["active", "deprecated", "under-review"]
-
-
-class EnrichmentStore:
-    """
-    Reads/writes enrichments.json.
-    Keys are item IDs (agent_id for agents, tool name for tools).
-    """
-
-    def _load(self) -> dict:
-        try:
-            if ENRICHMENTS_PATH.exists():
-                return json.loads(ENRICHMENTS_PATH.read_text())
-        except Exception as e:
-            logger.error(f"Failed to load enrichments: {e}")
-        return {}
-
-    def _save(self, data: dict):
-        ENRICHMENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        ENRICHMENTS_PATH.write_text(json.dumps(data, indent=2))
-
-    def get(self, item_id: str) -> dict:
-        return self._load().get(item_id, {})
-
-    def save(self, item_id: str, enrichment: dict):
-        data = self._load()
-        # Merge: keep existing fields not in the new payload so that
-        # a re-registration doesn't wipe out fields like example_request.
-        existing = data.get(item_id, {})
-        data[item_id] = {**existing, **enrichment}
-        self._save(data)
-
-    def all(self) -> dict:
-        return self._load()
-
-
-enrichment_store = EnrichmentStore()
 
 
 def _default_enrichment(name: str, item_type: str) -> dict:
