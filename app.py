@@ -2103,7 +2103,7 @@ async function rescanAgent(agentId) {
     loadAll();
   } catch(e) {
     alert('Re-scan failed: ' + e.message);
-    if (btn) { btn.textContent = '\ud83d\udd04 Re-scan Governance (fetch latest code)'; btn.disabled = false; }
+    if (btn) { btn.textContent = 'Re-scan Governance (fetch latest code)'; btn.disabled = false; }
   }
 }
 
