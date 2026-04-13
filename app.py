@@ -633,8 +633,64 @@ HTML = """<!DOCTYPE html>
   <div class="max-w-7xl mx-auto px-6 pb-2 flex gap-4 text-xs">
     <span>MCP Server: <span id="mcpStatus" class="font-semibold">checking...</span></span>
     <span>A2A Server: <span id="a2aStatus" class="font-semibold">checking...</span></span>
+    <button onclick="document.getElementById('checksModal').classList.remove('hidden')" class="ml-auto text-indigo-300 hover:text-white text-xs font-medium flex items-center gap-1">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      25 Governance Checks
+    </button>
   </div>
 </header>
+
+<!-- CHECKS MODAL -->
+<div id="checksModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="bg-white rounded-2xl shadow-2xl w-[640px] max-h-[80vh] overflow-y-auto p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-bold text-gray-800">25 AI Governance Checks</h2>
+      <button onclick="document.getElementById('checksModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="text-xs text-gray-500 mb-4">Every agent and tool is automatically reviewed against these checks by the AI governance engine. Results appear in the detail panel after registration.</p>
+    <div class="mb-4">
+      <p class="text-xs font-semibold text-indigo-700 uppercase mb-2">Infrastructure &amp; Security (1–15)</p>
+      <div class="grid grid-cols-1 gap-1">
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">1.</span><span><span class="font-semibold text-gray-700">LLM/Model Usage Detection</span> <span class="text-gray-400">— hardcoded API keys, model references, prompt injection risks</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">2.</span><span><span class="font-semibold text-gray-700">Secrets &amp; Credentials</span> <span class="text-gray-400">— API keys, tokens, passwords in source code</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">3.</span><span><span class="font-semibold text-gray-700">PII Scope Detection</span> <span class="text-gray-400">— SSN, credit cards, emails, phone numbers</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">4.</span><span><span class="font-semibold text-gray-700">PCI-DSS Scope Detection</span> <span class="text-gray-400">— payment card data processing</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">5.</span><span><span class="font-semibold text-gray-700">Data Retention &amp; Privacy</span> <span class="text-gray-400">— GDPR, data deletion, log retention</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">6.</span><span><span class="font-semibold text-gray-700">Rate Limiting &amp; DoS Protection</span> <span class="text-gray-400">— endpoint protection, timeouts</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">7.</span><span><span class="font-semibold text-gray-700">Model Output Validation</span> <span class="text-gray-400">— eval() on LLM output, schema validation</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">8.</span><span><span class="font-semibold text-gray-700">Agent Chaining &amp; Loops</span> <span class="text-gray-400">— cycle detection, max depth limits</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">9.</span><span><span class="font-semibold text-gray-700">Cost &amp; Token Tracking</span> <span class="text-gray-400">— token counting, budget limits</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">10.</span><span><span class="font-semibold text-gray-700">Authentication &amp; Authorization</span> <span class="text-gray-400">— endpoint auth, RBAC, token validation</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">11.</span><span><span class="font-semibold text-gray-700">Dependency Vulnerabilities</span> <span class="text-gray-400">— unpinned versions, known CVEs</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">12.</span><span><span class="font-semibold text-gray-700">Observability &amp; Monitoring</span> <span class="text-gray-400">— structured logging, metrics, health checks</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">13.</span><span><span class="font-semibold text-gray-700">Input Validation &amp; Sanitization</span> <span class="text-gray-400">— SQL injection, command injection, XSS</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">14.</span><span><span class="font-semibold text-gray-700">Prompt Injection Detection</span> <span class="text-gray-400">— unsanitized user input in LLM prompts</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-red-500 font-bold shrink-0">15.</span><span><span class="font-semibold text-gray-700">Error Handling &amp; Logging</span> <span class="text-gray-400">— sensitive data in error messages</span></span></div>
+      </div>
+    </div>
+    <div class="mb-4">
+      <p class="text-xs font-semibold text-purple-700 uppercase mb-2">AI Governance (16–25)</p>
+      <div class="grid grid-cols-1 gap-1">
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">16.</span><span><span class="font-semibold text-gray-700">Human-in-the-Loop</span> <span class="text-gray-400">— autonomous decisions, escalation paths, confidence thresholds</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">17.</span><span><span class="font-semibold text-gray-700">Model Card &amp; Transparency</span> <span class="text-gray-400">— model declaration, limitations, intended use</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">18.</span><span><span class="font-semibold text-gray-700">Guardrails &amp; Content Filtering</span> <span class="text-gray-400">— output safety, topic restrictions</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">19.</span><span><span class="font-semibold text-gray-700">Bias &amp; Fairness</span> <span class="text-gray-400">— protected class impact, proxy variables, feedback loops</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">20.</span><span><span class="font-semibold text-gray-700">Explainability &amp; Auditability</span> <span class="text-gray-400">— decision logging, reasoning traces</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">21.</span><span><span class="font-semibold text-gray-700">Grounding &amp; RAG Validation</span> <span class="text-gray-400">— source attribution, stale data detection</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">22.</span><span><span class="font-semibold text-gray-700">Model Fallback &amp; Degradation</span> <span class="text-gray-400">— fail-open vs fail-closed, circuit breakers</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">23.</span><span><span class="font-semibold text-gray-700">Data Sent to Model Provider</span> <span class="text-gray-400">— PII/PCI in prompts, data minimization</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">24.</span><span><span class="font-semibold text-gray-700">Consent &amp; AI Disclosure</span> <span class="text-gray-400">— GDPR Art. 22, opt-out mechanisms</span></span></div>
+        <div class="flex items-start gap-2 text-xs"><span class="text-purple-500 font-bold shrink-0">25.</span><span><span class="font-semibold text-gray-700">Model Version Pinning</span> <span class="text-gray-400">— floating vs pinned versions, regression tests</span></span></div>
+      </div>
+    </div>
+    <div class="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
+      <p class="font-semibold text-gray-600 mb-1">Framework-Aware Analysis</p>
+      <p>The reviewer also detects agent frameworks (LangChain, CrewAI, AutoGen, LangGraph, Semantic Kernel, LlamaIndex, Google ADK, Bedrock Agents, OpenAI Agents SDK) and applies framework-specific checks on top of the 25 standard checks. Patterns are loaded from <code class="bg-gray-200 px-1 rounded">framework_patterns.yaml</code>.</p>
+    </div>
+  </div>
+</div>
 
 <!-- MAIN -->
 <div class="max-w-7xl mx-auto px-6 py-6 flex gap-6">
