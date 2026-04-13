@@ -6,6 +6,9 @@ Run: python app.py  →  http://localhost:8000
 
 import json
 import logging
+import os
+import io
+import csv
 import httpx
 import uvicorn
 import asyncio
@@ -40,6 +43,18 @@ from src.sqlite_store import sqlite_store
 from src.auth import verify_api_key, require_permission, optional_auth, ALLOW_UNAUTHENTICATED_READ
 
 from src.governance_agent import governance_agent  # must be after load_dotenv()
+
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+
+async def _notify(message: str):
+    """Send notification to Slack. Fire-and-forget — never blocks."""
+    if not SLACK_WEBHOOK_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(SLACK_WEBHOOK_URL, json={"text": message})
+    except Exception as e:
+        logger.debug(f"Slack notification failed: {e}")
 
 app = FastAPI(title="Agent Marketplace", version="1.0.0")
 mcp = MCPClient()
@@ -128,7 +143,6 @@ async def get_stats(auth: tuple = Depends(optional_auth)):
 @app.get("/api/governance/status")
 async def governance_status():
     """Returns whether the AI governance agent is configured and ready."""
-    import os
     ready = governance_agent.model is not None
     return {
         "ready": ready,
@@ -378,6 +392,7 @@ async def approve_agent(agent_id: str, req: ApprovalRequest, auth: tuple = Depen
     sqlite_store.log_action(agent_id, f"agent_{req.decision}d", actor, {"notes": req.notes})
     
     logger.info(f"Agent {agent_id} {req.decision}d by {actor}")
+    await _notify(f"{'\u2705' if req.decision == 'approve' else '\u274c'} Agent *{agent_id}* {req.decision}d by {actor}" + (f"\nReason: {req.notes}" if req.notes else ""))
     
     return {
         "status": "success",
@@ -529,6 +544,55 @@ async def enforcement_summary(auth: tuple = Depends(optional_auth)):
             "allowed": allowed,
         })
     return summary
+
+
+@app.get("/api/export")
+async def export_data(format: str = "csv", auth: tuple = Depends(optional_auth)):
+    """Export all agents/tools with governance status as CSV or JSON."""
+    agents = aggregate_agents(await a2a.get_agents())
+    tools = aggregate_tools(await _get_all_tools())
+    all_items = agents + tools
+
+    if format == "json":
+        return all_items
+
+    # CSV export
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "ID", "Name", "Type", "Status", "Owner Team", "Description",
+        "Compliance Tags", "Source Repo", "Registered At",
+        "AI Reviewed", "Confidence", "PCI Scope", "PII Scope",
+        "Risk Flags", "Unverified Claims", "Requires Human Review",
+    ])
+    for item in all_items:
+        review = item.get("ai_review") or {}
+        writer.writerow([
+            item.get("id", ""),
+            item.get("name", ""),
+            item.get("item_type", ""),
+            item.get("status", ""),
+            item.get("owner_team", ""),
+            item.get("description", ""),
+            "; ".join(item.get("compliance", [])),
+            item.get("source_repo", ""),
+            item.get("registered_at", ""),
+            "Yes" if review else "No",
+            review.get("confidence", ""),
+            review.get("pci_scope", ""),
+            review.get("pii_scope", ""),
+            "; ".join(review.get("risk_flags", [])),
+            "; ".join(review.get("unverified_claims", [])),
+            str(review.get("requires_human_review", "")),
+        ])
+
+    from fastapi.responses import StreamingResponse
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=governance_report.csv"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +763,10 @@ HTML = """<!DOCTYPE html>
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
       30 Governance Checks
     </button>
+    <a href="/api/export?format=csv" class="text-indigo-300 hover:text-white text-xs font-medium flex items-center gap-1 ml-3">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+      Export CSV
+    </a>
   </div>
 </header>
 
@@ -2175,6 +2243,7 @@ async def scan_and_review_agents():
                 "compliance": [],
             })
             sqlite_store.log_action(agent_id, "auto_detected", "system", {"source": "a2a_registry"})
+            await _notify(f"\u26a0\ufe0f New agent auto-detected: *{agent_id}* (registered directly with A2A, bypassed marketplace)")
             enr = sqlite_store.get(agent_id)
         
         # Trigger governance review if missing
@@ -2248,6 +2317,10 @@ async def scan_and_review_agents():
                     })
                     sqlite_store.log_action(agent_id, "ai_review_completed", "system", {"confidence": review.get("confidence")})
                     logger.info(f"✓ Governance review completed for {agent_id} → {new_status}")
+                    if has_issues:
+                        flags = review.get('risk_flags', [])[:3]
+                        flag_text = chr(10).join(f'  - {f}' for f in flags)
+                        await _notify(f"🔴 Governance review for *{agent_id}*: {len(review.get('risk_flags',[]))} risk flags\n{flag_text}")
             except Exception as e:
                 logger.error(f"Governance review failed for {agent_id}: {e}")
 
