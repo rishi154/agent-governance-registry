@@ -390,6 +390,65 @@ async def get_agent_audit(agent_id: str, auth: tuple = Depends(require_permissio
     return sqlite_store.get_audit_log(agent_id=agent_id)
 
 
+@app.post("/api/agents/{agent_id}/rescan")
+async def rescan_agent(agent_id: str, auth: tuple = Depends(require_permission("can_register"))):
+    """Re-run AI governance review with fresh source code. Appends new review to history."""
+    role, actor = auth
+
+    enr = sqlite_store.get(agent_id)
+    if not enr:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+    source_repo = enr.get("source_repo", "")
+    if not source_repo:
+        raise HTTPException(status_code=400, detail="No source_repo on record — cannot re-scan without a repository URL.")
+
+    sqlite_store.log_action(agent_id, "rescan_requested", actor, {})
+
+    # Fetch fresh source code and run review
+    catalog = aggregate_agents(await a2a.get_agents()) + aggregate_tools(await _get_all_tools())
+    source_code = await governance_agent.fetch_source_code(source_repo)
+    review = await governance_agent.review(
+        item_id=agent_id,
+        item_type=enr.get("item_type", "agent"),
+        payload={
+            "agent_id": agent_id,
+            "owner_team": enr.get("owner_team", "Unknown"),
+            "source_repo": source_repo,
+            "description": enr.get("description", ""),
+            "compliance": enr.get("compliance", []),
+        },
+        existing_catalog=catalog,
+        source_code=source_code,
+    )
+
+    if not review:
+        raise HTTPException(status_code=502, detail="Governance review failed — check Vertex AI configuration.")
+
+    has_issues = review.get("requires_human_review") or (review.get("risk_flags") and len(review.get("risk_flags")) > 0)
+    is_auto = enr.get("discovery_method") == "auto_detected"
+    if has_issues:
+        new_status = "under_review"
+    elif is_auto:
+        new_status = "live_reviewed"
+    else:
+        new_status = "pending_review"
+
+    sqlite_store.save(agent_id, {
+        "ai_review": review,
+        "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
+        "status": new_status,
+    })
+    sqlite_store.log_action(agent_id, "rescan_completed", actor, {"confidence": review.get("confidence"), "new_status": new_status})
+
+    return {
+        "status": "rescanned",
+        "agent_id": agent_id,
+        "new_status": new_status,
+        "ai_review": review,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Existing endpoints
 # ---------------------------------------------------------------------------
@@ -1476,6 +1535,13 @@ async function openDetail(itemId) {
           ✗ Reject
         </button>
       </div>` : ''}
+      ${item.source_repo && item.ai_review ? `
+      <div class="mt-2">
+        <button onclick="rescanAgent('${item.id}')" id="rescanBtn"
+          class="w-full bg-indigo-100 text-indigo-700 text-xs font-semibold py-2 rounded-lg hover:bg-indigo-200 transition flex items-center justify-center gap-1">
+          🔄 Re-scan Governance (fetch latest code)
+        </button>
+      </div>` : ''}
       ${item.status === 'pending_review' && item.ai_review ? `
       <div class="mt-3">
         <button onclick="approveAgent('${item.id}')" class="w-full bg-green-600 text-white text-xs font-semibold py-2 rounded-lg hover:bg-green-700 transition">
@@ -2023,6 +2089,21 @@ async function rejectAgent(agentId) {
     loadAll();
   } catch(e) {
     alert('Failed to reject: ' + e.message);
+  }
+}
+
+async function rescanAgent(agentId) {
+  if (!confirm(`Re-scan ${agentId}? This will fetch the latest source code and run a fresh governance review.`)) return;
+  const btn = document.getElementById('rescanBtn');
+  if (btn) { btn.textContent = 'Scanning...'; btn.disabled = true; }
+  try {
+    const result = await api(`/api/agents/${agentId}/rescan`, 'POST', {});
+    alert(`Re-scan complete! New status: ${result.new_status}`);
+    closeDetail();
+    loadAll();
+  } catch(e) {
+    alert('Re-scan failed: ' + e.message);
+    if (btn) { btn.textContent = '\ud83d\udd04 Re-scan Governance (fetch latest code)'; btn.disabled = false; }
   }
 }
 
