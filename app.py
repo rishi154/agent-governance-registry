@@ -549,6 +549,46 @@ async def enforcement_summary(auth: tuple = Depends(optional_auth)):
     return summary
 
 
+@app.get("/api/agents/{agent_id}/export")
+async def export_agent(agent_id: str, auth: tuple = Depends(optional_auth)):
+    """Export full governance evidence for a single agent as JSON."""
+    enr = sqlite_store.get(agent_id)
+    if not enr:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+    # Get all reviews (history)
+    with sqlite_store._get_conn() as conn:
+        review_rows = conn.execute(
+            "SELECT review_data, reviewed_at FROM reviews WHERE agent_id = ? ORDER BY id DESC",
+            (agent_id,)
+        ).fetchall()
+    reviews = [{"reviewed_at": r["reviewed_at"], "review": json.loads(r["review_data"])} for r in review_rows]
+
+    audit = sqlite_store.get_audit_log(agent_id=agent_id)
+
+    evidence = {
+        "export_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "agent_id": agent_id,
+        "status": enr.get("status"),
+        "owner_team": enr.get("owner_team"),
+        "description": enr.get("description"),
+        "source_repo": enr.get("source_repo"),
+        "compliance_tags": enr.get("compliance", []),
+        "registered_at": enr.get("registered_at"),
+        "discovery_method": enr.get("discovery_method"),
+        "current_review": enr.get("ai_review"),
+        "review_history": reviews,
+        "audit_trail": audit,
+    }
+
+    from fastapi.responses import Response
+    return Response(
+        content=json.dumps(evidence, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={agent_id}_governance_evidence.json"},
+    )
+
+
 @app.get("/api/export")
 async def export_data(format: str = "csv", auth: tuple = Depends(optional_auth)):
     """Export all agents/tools with governance status as CSV or JSON."""
@@ -1609,12 +1649,16 @@ async function openDetail(itemId) {
           ✗ Reject
         </button>
       </div>` : ''}
-      ${item.source_repo && item.ai_review ? `
-      <div class="mt-2">
-        <button onclick="rescanAgent('${item.id}')" id="rescanBtn"
-          class="w-full bg-indigo-100 text-indigo-700 text-xs font-semibold py-2 rounded-lg hover:bg-indigo-200 transition flex items-center justify-center gap-1">
-          🔄 Re-scan Governance (fetch latest code)
-        </button>
+      ${item.ai_review ? `
+      <div class="mt-2 flex gap-2">
+        ${item.source_repo ? `<button onclick="rescanAgent('${item.id}')" id="rescanBtn"
+          class="flex-1 bg-indigo-100 text-indigo-700 text-xs font-semibold py-2 rounded-lg hover:bg-indigo-200 transition flex items-center justify-center gap-1">
+          🔄 Re-scan Governance
+        </button>` : ''}
+        <a href="/api/agents/${item.id}/export" download
+          class="flex-1 bg-gray-100 text-gray-700 text-xs font-semibold py-2 rounded-lg hover:bg-gray-200 transition flex items-center justify-center gap-1">
+          📄 Export Evidence
+        </a>
       </div>` : ''}
       ${item.status === 'pending_review' && item.ai_review ? `
       <div class="mt-3">
