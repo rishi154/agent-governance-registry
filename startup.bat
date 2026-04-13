@@ -14,8 +14,8 @@ REM ============================================================================
 REM ---------------------------------------------------------------------------
 REM CONFIGURATION — Edit these paths for your environment
 REM ---------------------------------------------------------------------------
-set MCP_SERVER_DIR=C:\work\projects\mcp_server
-set MCP_SERVER_CMD=python -m rsagenticai_mcp_server.server
+set MCP_SERVER_DIR=C:\work\my-github-repos\rsagenticai-mcp-server
+set MCP_SERVER_CMD=python run_server.py
 set MCP_SERVER_PORT=9595
 
 set A2A_SERVER_DIR=C:\work\projects\ap2_a2a_server
@@ -30,6 +30,7 @@ set DEMO_CREDIT_DIR=%MARKETPLACE_DIR%\demo_agents\credit-decision-agent
 set DEMO_KYC_DIR=%MARKETPLACE_DIR%\demo_agents\kyc-verification-agent
 
 REM Set to 1 to start demo agents, 0 to skip
+REM Demo agents are for showcasing governance — not needed for normal use
 set START_DEMO_AGENTS=1
 
 REM ---------------------------------------------------------------------------

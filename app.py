@@ -120,6 +120,7 @@ async def get_stats(auth: tuple = Depends(optional_auth)):
         "enforcement": {
             "approved": sum(1 for i in all_items if i.get("status") in ["active", "approved"]),
             "blocked": sum(1 for i in all_items if i.get("status") in ["rejected", "pending_review", "under_review"]),
+            "live_unreviewed": sum(1 for i in all_items if i.get("status") in LIVE_UNREVIEWED_STATUSES),
         },
     }
 
@@ -347,8 +348,8 @@ async def get_review_queue(auth: tuple = Depends(require_permission("can_approve
     tools = aggregate_tools(await _get_all_tools())
     all_items = agents + tools
     
-    # Filter to pending/under review
-    pending = [i for i in all_items if i.get("status") in ["pending_review", "under_review"]]
+    # Filter to items needing attention
+    pending = [i for i in all_items if i.get("status") in ["pending_review", "under_review", "live_unreviewed", "live_reviewed"]]
     
     return {
         "count": len(pending),
@@ -399,6 +400,7 @@ async def get_agent_audit(agent_id: str, auth: tuple = Depends(require_permissio
 # ---------------------------------------------------------------------------
 
 BLOCKED_STATUSES = {"rejected", "pending_review", "under_review"}
+LIVE_UNREVIEWED_STATUSES = {"live_unreviewed", "live_reviewed"}
 
 def _check_enforcement(item_id: str, item_type: str = "agent") -> dict | None:
     """Return enrichment if item is approved/active, else raise 403."""
@@ -957,7 +959,8 @@ function renderCards(items) {
 function cardHTML(item) {
   const isAgent = item.item_type === 'agent';
   const isBlocked = ['pending_review','under_review','rejected'].includes(item.status);
-  const statusColor = { active: 'dot-active', approved: 'dot-active', deprecated: 'dot-deprecated', 'under-review': 'dot-review', 'under_review': 'dot-review', 'pending_review': 'dot-review', rejected: 'dot-deprecated' }[item.status] || 'dot-active';
+  const isLiveUnreviewed = ['live_unreviewed','live_reviewed'].includes(item.status);
+  const statusColor = { active: 'dot-active', approved: 'dot-active', live_reviewed: 'dot-active', live_unreviewed: 'dot-review', deprecated: 'dot-deprecated', 'under-review': 'dot-review', 'under_review': 'dot-review', 'pending_review': 'dot-review', rejected: 'dot-deprecated' }[item.status] || 'dot-active';
   const unverified = new Set((item.ai_review || {}).unverified_claims || []);
   const badges = (item.compliance || []).map(c => {
     if (unverified.has(c)) return `<span class="text-xs px-1.5 py-0.5 rounded font-medium bg-red-50 text-red-600 line-through" title="Unverified claim">⚠ ${c}</span>`;
@@ -988,7 +991,7 @@ function cardHTML(item) {
     </div>
     <p class="text-xs text-gray-500 line-clamp-2 mb-2">${item.description || 'No description provided.'}</p>
     ${caps}
-    <div class="mt-3 flex flex-wrap gap-1">${badges}${authBadge}${isBlocked ? '<span class="text-xs px-1.5 py-0.5 rounded font-medium badge-blocked">🚫 Blocked</span>' : '<span class="text-xs px-1.5 py-0.5 rounded font-medium badge-approved">✓ Allowed</span>'}</div>
+    <div class="mt-3 flex flex-wrap gap-1">${badges}${authBadge}${isBlocked ? '<span class="text-xs px-1.5 py-0.5 rounded font-medium badge-blocked">🚫 Blocked</span>' : isLiveUnreviewed ? '<span class="text-xs px-1.5 py-0.5 rounded font-medium bg-amber-50 text-amber-700">⚠ Live — Unreviewed</span>' : '<span class="text-xs px-1.5 py-0.5 rounded font-medium badge-approved">✓ Allowed</span>'}</div>
   </div>`;
 }
 
@@ -1272,10 +1275,16 @@ async function openDetail(itemId) {
   if (!item) return;
   const isAgent = item.item_type === 'agent';
   const isBlocked = ['pending_review','under_review','rejected'].includes(item.status);
+  const isLiveUnreviewed = ['live_unreviewed','live_reviewed'].includes(item.status);
   const enforcementBadge = isBlocked
     ? `<div class="mt-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-800 font-semibold">
         🚫 BLOCKED — This ${isAgent ? 'agent' : 'tool'} cannot be invoked. Status: ${item.status}.
         ${item.status === 'rejected' ? 'It was rejected by an admin.' : 'Admin approval required.'}
+      </div>`
+    : isLiveUnreviewed
+    ? `<div class="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 font-semibold">
+        ⚠ LIVE — UNREVIEWED — This ${isAgent ? 'agent' : 'tool'} is running in the A2A registry but has not been governance-approved.
+        ${item.ai_review ? 'AI review complete — admin approval recommended.' : 'AI review pending.'}
       </div>`
     : `<div class="mt-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800 font-semibold">
         ✓ APPROVED — This ${isAgent ? 'agent' : 'tool'} is allowed to receive traffic.
@@ -1332,7 +1341,7 @@ async function openDetail(itemId) {
         </div>
       </div>
       ${enforcementBadge}
-      ${item.status === 'under_review' ? `
+      ${(item.status === 'under_review' || isLiveUnreviewed) ? `
       <div class="mt-3 flex gap-2">
         <button onclick="approveAgent('${item.id}')" class="flex-1 bg-green-600 text-white text-xs font-semibold py-2 rounded-lg hover:bg-green-700 transition">
           ✓ Approve
@@ -1942,14 +1951,14 @@ async def scan_and_review_agents():
             
         enr = enrichments.get(agent_id, {})
         
-        # Create enrichment for newly detected agents
+        # Create enrichment for newly detected agents — mark as live_unreviewed (not blocked)
         if not enr:
             logger.warning(f"⚠️  Auto-detected agent bypassed marketplace: {agent_id}")
             sqlite_store.save(agent_id, {
                 "owner_team": agent.get("owner_team", "Unassigned"),
                 "source_repo": agent.get("source_repo", ""),
                 "description": agent.get("description", "Auto-detected agent (registered directly with A2A server)"),
-                "status": "pending_review",
+                "status": "live_unreviewed",
                 "item_type": "agent",
                 "registered_at": datetime.utcnow().strftime("%Y-%m-%d"),
                 "discovery_method": "auto_detected",
@@ -1966,6 +1975,7 @@ async def scan_and_review_agents():
             if not source_repo:
                 # No source repo - create warning review
                 sqlite_store.save(agent_id, {
+                    "status": "live_reviewed",
                     "ai_review": {
                         "summary": "⚠️ Agent registered without source repository. Cannot perform code-based governance review.",
                         "requires_human_review": True,
@@ -2013,13 +2023,22 @@ async def scan_and_review_agents():
                 )
                 if review:
                     has_issues = review.get("requires_human_review") or (review.get("risk_flags") and len(review.get("risk_flags")) > 0)
+                    # Auto-detected agents: live_reviewed (clean) or under_review (issues)
+                    # Marketplace-registered agents: pending_review or under_review
+                    is_auto = enr.get("discovery_method") == "auto_detected"
+                    if has_issues:
+                        new_status = "under_review"
+                    elif is_auto:
+                        new_status = "live_reviewed"
+                    else:
+                        new_status = "pending_review"
                     sqlite_store.save(agent_id, {
                         "ai_review": review,
                         "ai_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d"),
-                        "status": "under_review" if has_issues else "pending_review",
+                        "status": new_status,
                     })
                     sqlite_store.log_action(agent_id, "ai_review_completed", "system", {"confidence": review.get("confidence")})
-                    logger.info(f"✓ Governance review completed for {agent_id}")
+                    logger.info(f"✓ Governance review completed for {agent_id} → {new_status}")
             except Exception as e:
                 logger.error(f"Governance review failed for {agent_id}: {e}")
 
